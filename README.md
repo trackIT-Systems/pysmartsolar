@@ -42,7 +42,9 @@ The key and the passkey are never logged and never published.
   * `hold`: keep a connection and publish the values the device pushes every `gatt.publish_interval_s`. A ping every `gatt.keepalive_s` keeps it open (the device closes the link 10 s after the last ping).
   * `poll`: connect every `gatt.poll_interval_s`, collect the values, publish, disconnect.
 
-  While a connection is being opened the advertisement scan is paused (BlueZ rejects connects while the same client scans), so with an access point up on 2.4 GHz the connection attempts of `hold` and `poll` cost advertisement readings. Failed attempts are retried with a jittered, growing delay, and nothing here touches Wi-Fi. Use `gatt.mode: off` there.
+  The device keeps advertising while a GATT connection is open, so the advertisement data stays fresh in `hold` and `poll`.
+
+  While a connection is being opened the advertisement scan is paused (BlueZ rejects connects while the same client scans), so with an access point up on 2.4 GHz the connection attempts of `hold` and `poll` cost advertisement readings (in a test, no reading for the first minute while the first attempts timed out). Failed attempts are retried with a jittered, growing delay, and nothing here touches Wi-Fi. Use `gatt.mode: off` there.
 * **CSV:** `/data/<host>/smartsolar/<host>_<timestamp>-smartsolar.csv`, one row per value (`ts, device, block, key, value, unit`; block `advert`, `gatt` or `event`).
 * **MQTT:** `{host}/smartsolar/{mac}/json|cbor` per reading (field `source`: `advert` or `gatt`), `{host}/smartsolar/state/json|cbor` (retained, `offline` as the last will) and `{host}/smartsolar/events/json|cbor`.
 
