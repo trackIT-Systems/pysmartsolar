@@ -11,7 +11,7 @@ from smartsolar.reading import Event, Reading, utc_iso
 CSV_FIELDS = ("ts", "device", "block", "key", "value", "unit")
 CSV_FILENAME_TIMESTAMP = "%Y-%m-%dT%H%M%S"
 # Events that are useful for analysing the connection afterwards.
-LOGGED_EVENTS = {"connected", "disconnected", "device_selected", "device_switched", "key_fetched", "key_rejected", "paired", "register_written"}
+LOGGED_EVENTS = {"connected", "disconnected", "device_selected", "device_switched", "key_fetched", "key_rejected", "paired", "register_written", "serial_opened", "serial_lost", "serial_device"}
 
 
 def csv_session_path(base: Path, hostname: str | None = None, when: datetime | None = None) -> Path:

@@ -82,3 +82,24 @@ def test_a_failing_sink_does_not_affect_the_others():
 
     Outputs([Broken(), Good()]).emit_reading(reading())
     assert len(got) == 1
+
+
+def test_a_serial_number_is_the_topic_and_the_csv_device(tmp_path):
+    from dataclasses import replace
+
+    r = replace(reading(), device="HQ22294ZGEU")
+    client = FakeMqtt()
+    MqttOutput(MqttConfig(), hostname="tracker", client=client).emit_reading(r)
+    assert {t for t, _, _ in client.published} == {"tracker/smartsolar/HQ22294ZGEU/json", "tracker/smartsolar/HQ22294ZGEU/cbor"}
+    out = CsvOutput(tmp_path / "s.csv")
+    out.emit_reading(r)
+    with (tmp_path / "s.csv").open() as handle:
+        assert {row["device"] for row in csv.DictReader(handle)} == {"HQ22294ZGEU"}
+
+
+def test_device_ids():
+    from smartsolar.reading import device_id, serial_from_name, topic_id
+
+    assert serial_from_name("SmartSolar HQ22294ZGEU") == "HQ22294ZGEU" and serial_from_name("SmartSolar") is None and serial_from_name(None) is None
+    assert device_id("F7:48:18:8A:77:9D", "SmartSolar HQ22294ZGEU") == "HQ22294ZGEU" and device_id("F7:48:18:8A:77:9D", "SmartSolar") == "F7:48:18:8A:77:9D"
+    assert topic_id("F7:48:18:8A:77:9D") == "f748188a779d" and topic_id("HQ22294ZGEU") == "HQ22294ZGEU"

@@ -55,11 +55,41 @@ def table(rows: list[list[str]], header: list[str] | None = None) -> str:
     return "\n".join("  ".join(cell.ljust(w) for cell, w in zip(row, widths)).rstrip() for row in rows)
 
 
+VIA_CHOICES = ("auto", "serial", "gatt")
+VIA_NAMES = {"serial": "the VE.Direct cable", "gatt": "Bluetooth (GATT)"}
+
+
+def format_serial_status(serial: dict[str, Any] | None) -> list[tuple[str, str]]:
+    if not serial:
+        return []
+    text = f"{serial['port']} {serial['state']}"
+    if serial.get("serial"):
+        text += f", {serial['serial']}"
+    if serial.get("product_id"):
+        text += f" product {serial['product_id']}"
+    if serial.get("firmware"):
+        text += f" firmware {serial['firmware']}"
+    text += f", hex {'on' if serial['hex'] else 'off (read only)'}"
+    if serial["last_block_age_s"] is not None:
+        text += f"   last block {fmt_duration(serial['last_block_age_s'])} ago, {serial['blocks']} blocks"
+    else:
+        text += "   no block yet"
+    for label in ("bad_checksum", "resyncs", "bad_hex", "hex_timeouts", "losses"):
+        if serial.get(label):
+            text += f", {serial[label]} {label.replace('_', ' ')}"
+    if serial.get("last_error") and serial["state"] != "open":
+        text += f", last error: {serial['last_error']}"
+    return [("vedirect", text)]
+
+
 def format_status(status: dict[str, Any], now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
     lines: list[tuple[str, str]] = []
+    ble = status.get("ble", True)
     device = status.get("device")
-    if device:
+    if not ble:
+        lines.append(("ble", "disabled"))
+    elif device:
         parts = [device["address"]]
         if device.get("name"):
             parts.append(device["name"])
@@ -82,27 +112,29 @@ def format_status(status: dict[str, Any], now: datetime | None = None) -> str:
         lines.append(("advert", text))
     else:
         lines.append(("device", f"none ({status['devices_seen']} Victron device(s) seen)"))
-    g = status["gatt"]
-    text = g["mode"]
-    if g["mode"] != "off" or g["state"] != "idle":
-        text += f", {g['state']}"
-    if g["connected"] and g["connected_since"]:
-        since = parse_time(g["connected_since"])
-        text += f" since {fmt_duration((now - since).total_seconds())}" if since else ""
-    if g["mode"] == "poll":
-        text += f", {g['polls']} poll(s)"
-        if g["next_poll_in_s"] is not None:
-            text += f", next in {fmt_duration(g['next_poll_in_s'])}"
-    if g["connect_attempts"]:
-        text += f"   {g['connect_attempts']} attempts, {g['connects']} connects, {g['disconnects']} disconnects"
-    if g["last_error"]:
-        text += f", last error: {g['last_error']}"
-    if g["backoff_s"] is not None and g["state"] == "backoff":
-        text += f", retrying in {g['backoff_s']:g}s"
-    lines.append(("gatt", text))
-    block = status["blocks"]["gatt"]
-    if block["enabled"]:
-        lines.append(("gatt data", "no data yet" if block["age_s"] is None else f"{'stale' if block['stale'] else 'ok'} {fmt_duration(block['age_s'])} ago"))
+    lines += format_serial_status(status.get("serial"))
+    if ble:
+        g = status["gatt"]
+        text = g["mode"]
+        if g["mode"] != "off" or g["state"] != "idle":
+            text += f", {g['state']}"
+        if g["connected"] and g["connected_since"]:
+            since = parse_time(g["connected_since"])
+            text += f" since {fmt_duration((now - since).total_seconds())}" if since else ""
+        if g["mode"] == "poll":
+            text += f", {g['polls']} poll(s)"
+            if g["next_poll_in_s"] is not None:
+                text += f", next in {fmt_duration(g['next_poll_in_s'])}"
+        if g["connect_attempts"]:
+            text += f"   {g['connect_attempts']} attempts, {g['connects']} connects, {g['disconnects']} disconnects"
+        if g["last_error"]:
+            text += f", last error: {g['last_error']}"
+        if g["backoff_s"] is not None and g["state"] == "backoff":
+            text += f", retrying in {g['backoff_s']:g}s"
+        lines.append(("gatt", text))
+        block = status["blocks"]["gatt"]
+        if block["enabled"]:
+            lines.append(("gatt data", "no data yet" if block["age_s"] is None else f"{'stale' if block['stale'] else 'ok'} {fmt_duration(block['age_s'])} ago"))
     lines.append(("daemon", f"smartsolard {status['version']}, up {fmt_duration(status['uptime_s'])}"))
     width = max(len(k) for k, _ in lines)
     return "\n".join(f"{k.ljust(width)}  {v}" for k, v in lines)
@@ -116,7 +148,8 @@ def format_cached(result: dict[str, Any]) -> str:
     out = []
     for name, block in result["blocks"].items():
         if not block["enabled"]:
-            out.append(f"{name}: not in use (gatt.mode is off)")
+            reason = {"advert": "ble.enabled is false", "gatt": "gatt.mode is off", "vedirect": "serial.enabled is false"}.get(name, "disabled")
+            out.append(f"{name}: not in use ({reason})")
         elif block["time"] is None:
             out.append(f"{name}: no data yet")
         else:
@@ -253,11 +286,13 @@ def cmd_write(args: argparse.Namespace, socket: Path) -> int:
     refused = confirm_write([f"{i.name} = {fmt_value(i.value)}" for i in items], args.yes)
     if refused is not None:
         return refused
-    result = ipc.request(socket, "write", {"values": values}, timeout=180)
+    result = ipc.request(socket, "write", {"values": values, **via_args(args)}, timeout=180)
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print(table([[w["name"], fmt_value(w["old"]), "->", fmt_value(w["value"]), "ok" if w["ok"] else "MISMATCH"] for w in result["written"]]))
+        if result.get("via"):
+            print(f"written over {VIA_NAMES.get(result['via'], result['via'])}")
     return EXIT_OK if all(w["ok"] for w in result["written"]) else EXIT_ERROR
 
 
@@ -265,8 +300,13 @@ def format_changes(changes: list[profiles.Change]) -> str:
     return table([[c.name, "none" if c.old is None else fmt_value(c.old), "->", "none" if c.new is None else fmt_value(c.new), c.unit] for c in changes])
 
 
-def live_settings(socket: Path) -> dict[str, Any]:
-    return ipc.request(socket, "settings", {}, timeout=180)
+def via_args(args: argparse.Namespace) -> dict[str, Any]:
+    via = getattr(args, "via", None)
+    return {"via": via} if via else {}
+
+
+def live_settings(socket: Path, args: argparse.Namespace | None = None) -> dict[str, Any]:
+    return ipc.request(socket, "settings", via_args(args) if args is not None else {}, timeout=180)
 
 
 def describe_profile(profile: profiles.Profile) -> str:
@@ -314,7 +354,7 @@ def cmd_profile_save(args: argparse.Namespace, socket: Path) -> int:
     if path is not None and path.exists() and not args.force:
         print(f"error: {path} exists, use --force to overwrite", file=sys.stderr)
         return EXIT_USAGE
-    live = live_settings(socket)
+    live = live_settings(socket, args)
     values = {v["name"]: v["value"] for v in live["values"]}
     blob = profiles.dump_profile(values, product_id=live.get("product_id"), firmware=live.get("firmware"), system_voltage=live.get("system_voltage"), description=args.description or "")
     if path is None:
@@ -333,7 +373,7 @@ def cmd_profile_save(args: argparse.Namespace, socket: Path) -> int:
 def cmd_profile_apply(args: argparse.Namespace, socket: Path) -> int:
     """profile diff / profile load: compare with the device, then write what differs and verify."""
     profile = profiles.load_profile(args.file)
-    live = live_settings(socket)
+    live = live_settings(socket, args)
     blockers, warnings = profiles.problems(
         profile,
         product_id=live.get("product_id"),
@@ -368,13 +408,14 @@ def cmd_profile_apply(args: argparse.Namespace, socket: Path) -> int:
     refused = confirm_write([f"{c.name} = {fmt_value(c.new)} {c.unit}".rstrip() for c in changes], args.yes)
     if refused is not None:
         return refused
-    result = ipc.request(socket, "write", {"values": {c.name: c.new for c in changes}}, timeout=300)
+    result = ipc.request(socket, "write", {"values": {c.name: c.new for c in changes}, **via_args(args)}, timeout=300)
     bad = [w for w in result["written"] if not w["ok"]]
     outcome.update(written=True, verified=not bad, mismatched=[w["name"] for w in bad])
     if args.json:
         print(json.dumps(outcome, indent=2, ensure_ascii=False))
     elif not bad:
-        print(f"written and verified: {len(changes)} value(s) read back as expected")
+        via = VIA_NAMES.get(result.get("via"), "")
+        print(f"written and verified: {len(changes)} value(s) read back as expected" + (f" (over {via})" if via else ""))
     if bad:
         print("error: the device does not report the written value for: " + ", ".join(f"{w['name']} (wanted {fmt_value(w['requested'])}, got {fmt_value(w['value'])})" for w in bad), file=sys.stderr)
         return EXIT_ERROR
@@ -445,9 +486,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", parents=[common], help="selected device, key, advertisement and GATT state")
     cached = sub.add_parser("cached", parents=[common], help="last values the daemon has (no radio traffic)")
-    cached.add_argument("block", nargs="?", default="all", choices=["all", "advert", "gatt"])
-    read = sub.add_parser("read", parents=[common], help="newest advertisement values, and GATT values (hold: now, poll: connects now)")
-    read.add_argument("block", nargs="?", default="all", choices=["all", "advert", "gatt"])
+    cached.add_argument("block", nargs="?", default="all", choices=["all", "advert", "gatt", "vedirect"])
+    read = sub.add_parser("read", parents=[common], help="newest advertisement values, GATT values (hold: now, poll: connects now) and the VE.Direct cable text block")
+    read.add_argument("block", nargs="?", default="all", choices=["all", "advert", "gatt", "vedirect"])
     read.add_argument("--raw", action="store_true", help="also list every register received over GATT as hex, decoded or not")
     profile = sub.add_parser("profile", help="apply a VictronConnect settings file (.vcsf) to the charger, or save the settings to one")
     psub = profile.add_subparsers(dest="profile_cmd", required=True, metavar="action")
@@ -460,6 +501,7 @@ def build_parser() -> argparse.ArgumentParser:
     for action, text in (("diff", "show what loading a settings file would change"), ("load", "write a settings file to the device: check, diff, confirm, write, verify")):
         p = psub.add_parser(action, parents=[common], help=text)
         p.add_argument("file", metavar="FILE.vcsf")
+        p.add_argument("--via", choices=VIA_CHOICES, help="which way to the device (default: daemon.registers)")
         p.add_argument("--ignore-device", action="store_true", help="do not refuse a profile made for another product id or newer firmware (provisioning)")
         if action == "load":
             p.add_argument("--dry-run", action="store_true", help="only show the differences")
@@ -475,8 +517,9 @@ def build_parser() -> argparse.ArgumentParser:
     decode.add_argument("data", help="manufacturer data after the company id, hex, e.g. 100253a001...")
     vregs = sub.add_parser("vregs", parents=[common], help="the registers decoded over GATT (no daemon)")
     vregs.add_argument("--writable", action="store_true", help="list the registers `write` can change, with their allowed values")
-    write = sub.add_parser("write", parents=[common], help="write registers over GATT, e.g. write device_mode=off (see vregs --writable)")
+    write = sub.add_parser("write", parents=[common], help="write registers (over the VE.Direct cable or GATT), e.g. write device_mode=off (see vregs --writable)")
     write.add_argument("assignments", nargs="+", metavar="NAME=VALUE")
+    write.add_argument("--via", choices=VIA_CHOICES, help="which way to the device (default: daemon.registers)")
     write.add_argument("--yes", "-y", action="store_true", help="do not ask for confirmation")
     return parser
 

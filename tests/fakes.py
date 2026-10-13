@@ -252,3 +252,118 @@ class FakeMqtt:
 
     def publish(self, topic, payload, qos=0, retain=False):
         self.published.append((topic, payload, retain))
+
+
+# -- the VE.Direct cable ------------------------------------------------------------
+
+from smartsolar import vedirect  # noqa: E402
+from smartsolar.errors import ConnectError as _ConnectError  # noqa: E402
+
+SERIAL_NUMBER = "HQ00000TEST"
+TEXT_FIELDS = [
+    ("PID", "0xA053"), ("FW", "164"), ("SER#", SERIAL_NUMBER), ("V", "13320"), ("I", "-10"), ("VPV", "24010"),
+    ("PPV", "2"), ("CS", "3"), ("MPPT", "2"), ("OR", "0x00000000"), ("ERR", "0"), ("LOAD", "ON"), ("IL", "0"),
+    ("H19", "9847"), ("H20", "1"), ("H21", "2"), ("H22", "0"), ("H23", "0"), ("HSDS", "343"),
+]
+
+
+def text_block(fields=None, *, corrupt: bool = False) -> bytes:
+    body = b"".join(b"\r\n" + k.encode() + b"\t" + v.encode() for k, v in (fields or TEXT_FIELDS)) + b"\r\nChecksum\t"
+    checksum = (-sum(body)) & 0xFF
+    return body + bytes([checksum ^ 1 if corrupt else checksum])
+
+
+class FakeSerial:
+    """The device end of a VE.Direct cable: pushes text blocks on request and answers HEX frames."""
+
+    def __init__(self, registers: dict[int, bytes] | None = None) -> None:
+        self.registers = dict(default_registers() if registers is None else registers)
+        self.writes: list[bytes] = []
+        self.refuse_flags: int | None = None  # answer every set with these flags instead of storing
+        self.swallow = 0  # do not answer the next n requests
+        self.silent = False  # never answer
+        self.closed = False
+        self.lost: Exception | None = None
+        self._queue: asyncio.Queue[bytes] = asyncio.Queue()
+
+    # -- the SerialLink side ------------------------------------------------
+
+    async def read(self) -> bytes:
+        if self.lost is not None:
+            raise self.lost
+        data = await self._queue.get()
+        if self.lost is not None:
+            raise self.lost
+        return data
+
+    async def write(self, data: bytes) -> None:
+        if self.lost is not None:
+            raise self.lost
+        self.writes.append(data)
+        for frame in data.split(b"\n"):
+            if frame.startswith(b":"):
+                asyncio.get_running_loop().call_soon(self._answer, frame[1:])
+
+    async def close(self) -> None:
+        self.closed = True
+
+    # -- driving it from a test ---------------------------------------------
+
+    def push(self, data: bytes) -> None:
+        self._queue.put_nowait(data)
+
+    def block(self, **overrides: str) -> None:
+        fields = [(k, overrides.get(k, v)) for k, v in TEXT_FIELDS]
+        self.push(text_block(fields))
+
+    def unplug(self) -> None:
+        self.lost = NotConnectedError("device reports readiness to read but returned no data")
+        self._queue.put_nowait(b"")
+
+    # -- the device side ----------------------------------------------------
+
+    def _reply(self, command: int, payload: bytes = b"") -> None:
+        self.push(vedirect.hex_frame(command, payload))
+
+    def _answer(self, body: bytes) -> None:
+        frame = vedirect.parse_hex_frame(body.strip(b"\r"))
+        if frame is None or self.silent:
+            return
+        if self.swallow:
+            self.swallow -= 1
+            return
+        if frame.command == 3:
+            self._reply(1, bytes.fromhex("6441"))  # release 1.64
+            return
+        if frame.command == vedirect.CMD_GET:
+            vreg = frame.vreg
+            if vreg in self.registers:
+                self._reply(7, vreg.to_bytes(2, "little") + b"\x00" + self.registers[vreg])
+            else:
+                self._reply(7, vreg.to_bytes(2, "little") + b"\x01")
+        elif frame.command == vedirect.CMD_SET:
+            vreg = frame.vreg
+            if vreg not in self.registers:
+                self._reply(8, vreg.to_bytes(2, "little") + b"\x01")
+            elif self.refuse_flags is not None:
+                self._reply(8, vreg.to_bytes(2, "little") + bytes([self.refuse_flags]))
+            else:
+                self.registers[vreg] = frame.value
+                self._reply(8, vreg.to_bytes(2, "little") + b"\x00" + frame.value)
+
+
+class FakeSerialOpener:
+    """Hands out the devices in turn; with none left (or ``missing``) the port does not exist."""
+
+    def __init__(self, *devices: FakeSerial) -> None:
+        self.devices = list(devices)
+        self.missing = False
+        self.opened: list[tuple[str, int]] = []
+        self.current: FakeSerial | None = None
+
+    async def __call__(self, port: str, baud: int) -> FakeSerial:
+        self.opened.append((port, baud))
+        if self.missing or not self.devices:
+            raise _ConnectError(f"cannot open {port}: no such file", not_found=True)
+        self.current = self.devices.pop(0)
+        return self.current

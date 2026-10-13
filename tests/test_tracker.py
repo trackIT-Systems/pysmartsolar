@@ -223,3 +223,31 @@ def test_scan_table_marks_the_selected_device_and_the_key(tmp_path):
     rows = {r["address"]: r for r in tracker.scan_table()}
     assert rows[A]["current"] and rows[A]["key"] == "config" and rows[B]["key"] == "missing"
     assert rows[A]["model"] == "0xa053" and rows[A]["solar_charger"] is True
+
+
+def test_the_serial_number_from_the_cable_selects_the_matching_device_whatever_its_signal(tmp_path):
+    clock = Clock()
+    tracker, cache, events, switched = make(tmp_path, keys={A: TEST_KEY, B: TEST_KEY}, clock=clock)[:4]
+    tracker.on_advert(advert(A, rssi=-40, name="SmartSolar HQ99999OTHR", nonce=1, at=clock.now))
+    tracker.on_advert(advert(B, rssi=-80, name="SmartSolar HQ00000TEST", nonce=1, at=clock.now))
+    clock.now += 11
+    tracker.review()
+    assert tracker.current_address == A
+    tracker.set_serial("HQ00000TEST")
+    assert tracker.current_address == B and switched and events[-1].kind == "device_switched"
+    tracker.on_advert(advert(B, rssi=-80, name="SmartSolar HQ00000TEST", nonce=2, at=clock.now))
+    assert cache.blocks["advert"].reading.device == "HQ00000TEST"
+    clock.now += 4000
+    tracker.on_advert(advert(A, rssi=-30, name="SmartSolar HQ99999OTHR", nonce=3, at=clock.now))
+    tracker.on_advert(advert(B, rssi=-80, name="SmartSolar HQ00000TEST", nonce=3, at=clock.now))
+    tracker.review()
+    assert tracker.current_address == B  # the strongest is not the right one
+
+
+def test_a_serial_number_nobody_advertises_changes_nothing(tmp_path):
+    tracker, _, _, _, _, clock = make(tmp_path)
+    feed(tracker, clock, A, -40, name="SmartSolar HQ99999OTHR")
+    clock.now += 11
+    tracker.review()
+    tracker.set_serial("HQ00000TEST")
+    assert tracker.current_address == A

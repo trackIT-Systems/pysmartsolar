@@ -21,7 +21,7 @@ from smartsolar.ble import Advertisement
 from smartsolar.config import AdvertConfig, BleConfig
 from smartsolar.errors import AdvertError, KeyMismatch
 from smartsolar.keys import SOURCE_FETCHED, KeyStore
-from smartsolar.reading import Event, Reading, Value
+from smartsolar.reading import Event, Reading, Value, device_id, serial_from_name
 from smartsolar.state import AdvertStats, Cache
 
 log = logging.getLogger(__name__)
@@ -87,6 +87,7 @@ class DeviceTracker:
         self.current_address: str | None = None
         self.current: Advertisement | None = None
         self.current_header: instant.Header | None = None
+        self.serial: str | None = None  # the serial number of the device on the VE.Direct cable: prefer the BLE device with it
         self.last_advert_mono: float | None = None
         self._started = clock()
         self._next_review = 0.0
@@ -153,14 +154,18 @@ class DeviceTracker:
             return
         self._mismatches = 0
         self.stats.decoded += 1
-        self.cache.update(Reading(adv.address, "advert", datetime.now().astimezone(), advert_values(decoded.values)))
+        self.cache.update(Reading(device_id(adv.address, adv.name), "advert", datetime.now().astimezone(), advert_values(decoded.values)))
 
     # -- selection ----------------------------------------------------------
 
     def eligible(self) -> list[Seen]:
-        """Solar chargers seen recently (other Victron devices are listed by ``scan`` but never selected)."""
+        """Solar chargers seen recently (other Victron devices are listed by ``scan`` but never selected).
+
+        With a serial number known from the cable, the device that carries it in its name is the
+        only candidate as long as it is in range; otherwise the others stay candidates.
+        """
         now = self._clock()
-        return [
+        found = [
             s
             for s in self.seen.values()
             if s.header is not None
@@ -168,11 +173,38 @@ class DeviceTracker:
             and now - s.last_seen <= ELIGIBLE_MAX_AGE_S
             and (self.ble.address is None or s.address == self.ble.address)
         ]
+        if self.serial is not None and self.ble.address is None:
+            mine = [s for s in found if serial_from_name(s.name) == self.serial]
+            if mine:
+                return mine
+        return found
+
+    def set_serial(self, serial: str | None) -> None:
+        """The cable reported its serial number: use the BLE device with the same one."""
+        if serial != self.serial:
+            self.serial = serial
+            self._prefer_serial()
+
+    def _prefer_serial(self) -> None:
+        """Switch to the device that carries the cable's serial number, whatever its signal strength."""
+        if self.serial is None or self.ble.address is not None or self.current_address is None:
+            return
+        current = self.seen.get(self.current_address)
+        if current is not None and serial_from_name(current.name) == self.serial:
+            return
+        mine = [s for s in self.eligible() if serial_from_name(s.name) == self.serial]
+        if not mine:
+            return
+        old = self.current_address
+        self._select(max(mine, key=lambda s: s.rssi), "serial", previous=old, rssi_from=None if current is None else round(current.rssi))
+        if self._on_switch is not None:
+            self._on_switch()
 
     def review(self) -> None:
         """Called about once a second."""
         now = self._clock()
         candidates = self.eligible()
+        self._prefer_serial()
         if self.current_address is None:
             if not candidates:
                 return
@@ -219,7 +251,7 @@ class DeviceTracker:
         self.last_advert_mono = self._clock()
         self._next_review = self._clock() + self.ble.rescan_interval_s
         _, source = self.keys.get(seen.address)
-        kind = "device_switched" if reason == "switch" else "device_selected"
+        kind = "device_switched" if reason in ("switch", "serial") else "device_selected"
         self._event(kind, seen.address, rssi=round(seen.rssi), name=seen.name, key=source, reason=reason, **extra)
         if self._on_select is not None:
             self._on_select()

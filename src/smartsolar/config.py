@@ -14,10 +14,13 @@ DEFAULT_CONFIG_PATH = Path("/boot/firmware/smartsolar.yml")
 DEFAULT_SOCKET_PATH = Path("/run/smartsolar/smartsolar.sock")
 DEFAULT_STATE_DIR = Path("/var/lib/smartsolar")
 GATT_MODES = ("off", "hold", "poll")
+REGISTER_PATHS = ("auto", "serial", "gatt")
+DEFAULT_SERIAL_PORT = "/dev/ttyUSBvd0"
 
 
 @dataclass(frozen=True)
 class BleConfig:
+    enabled: bool = True  # false: no scan and no GATT, the Bluetooth stack is not touched
     adapter: str | None = None
     address: str | None = None  # pin a device; otherwise the strongest SmartSolar is used
     select_window_s: float = 10.0  # listen this long before the first device selection
@@ -47,6 +50,21 @@ class GattConfig:
 
 
 @dataclass(frozen=True)
+class SerialConfig:
+    """The VE.Direct cable. Off unless enabled."""
+
+    enabled: bool = False
+    port: str = DEFAULT_SERIAL_PORT
+    baud: int = 19200
+    publish_interval_s: float = 60.0  # the device sends a text block every second
+    stale_after_s: float = 10.0
+    hex: bool = True  # also use the HEX protocol (settings, writes); false: the daemon never transmits
+    request_timeout_s: float = 2.0
+    reopen_initial_s: float = 2.0
+    reopen_max_s: float = 60.0
+
+
+@dataclass(frozen=True)
 class CsvConfig:
     enabled: bool = True
     path: Path = Path("/data")
@@ -67,6 +85,7 @@ class DaemonConfig:
     socket: Path = DEFAULT_SOCKET_PATH
     socket_mode: int = 0o660
     state_dir: Path = DEFAULT_STATE_DIR
+    registers: str = "auto"  # how settings are read and written: auto (the cable if it answers, else GATT), serial, gatt
     log_level: str = "INFO"
     csv: CsvConfig = field(default_factory=CsvConfig)
     mqtt: MqttConfig = field(default_factory=MqttConfig)
@@ -78,6 +97,7 @@ class AppConfig:
     ble: BleConfig = field(default_factory=BleConfig)
     advert: AdvertConfig = field(default_factory=AdvertConfig)
     gatt: GattConfig = field(default_factory=GattConfig)
+    serial: SerialConfig = field(default_factory=SerialConfig)
     keys: dict[str, bytes] = field(default_factory=dict, repr=False)  # secrets: never in a repr
     daemon: DaemonConfig = field(default_factory=DaemonConfig)
 
@@ -104,17 +124,25 @@ def load_config(path: Path | None = None) -> AppConfig:
 
 
 def parse_config(raw: dict[str, Any], path: Path | None = None) -> AppConfig:
-    unknown = set(raw) - {"ble", "advert", "gatt", "keys", "daemon"}
+    unknown = set(raw) - {"ble", "advert", "gatt", "serial", "keys", "daemon"}
     if unknown:
         raise ConfigError(f"Unknown top-level key(s): {', '.join(sorted(unknown))}")
-    return AppConfig(
+    config = AppConfig(
         path=path,
         ble=_parse_ble(_mapping(raw.get("ble"), "ble")),
         advert=_parse_advert(_mapping(raw.get("advert"), "advert")),
         gatt=_parse_gatt(_mapping(raw.get("gatt"), "gatt")),
+        serial=_parse_serial(_mapping(raw.get("serial"), "serial")),
         keys=parse_keys(_mapping(raw.get("keys"), "keys")),
         daemon=_parse_daemon(_mapping(raw.get("daemon"), "daemon")),
     )
+    if not config.ble.enabled and not config.serial.enabled:
+        raise ConfigError("nothing to do: ble.enabled is false and serial.enabled is false")
+    if config.daemon.registers == "serial" and not (config.serial.enabled and config.serial.hex):
+        raise ConfigError("daemon.registers is serial, but serial.enabled and serial.hex are not both true")
+    if config.daemon.registers == "gatt" and not config.ble.enabled:
+        raise ConfigError("daemon.registers is gatt, but ble.enabled is false")
+    return config
 
 
 def normalise_address(address: str) -> str:
@@ -192,6 +220,7 @@ def _parse_ble(raw: dict[str, Any]) -> BleConfig:
     _check_keys(raw, {f.name for f in fields(BleConfig)}, "ble")
     address = _str(raw, "address", d.address, "ble")
     return BleConfig(
+        enabled=_bool(raw, "enabled", d.enabled, "ble"),
         adapter=_str(raw, "adapter", d.adapter, "ble"),
         address=normalise_address(address) if address else None,
         select_window_s=_float(raw, "select_window_s", d.select_window_s, "ble", allow_zero=True),
@@ -206,6 +235,22 @@ def _parse_advert(raw: dict[str, Any]) -> AdvertConfig:
     return AdvertConfig(
         publish_interval_s=_float(raw, "publish_interval_s", d.publish_interval_s, "advert"),
         stale_after_s=_float(raw, "stale_after_s", d.stale_after_s, "advert"),
+    )
+
+
+def _parse_serial(raw: dict[str, Any]) -> SerialConfig:
+    d = SerialConfig()
+    _check_keys(raw, {f.name for f in fields(SerialConfig)}, "serial")
+    return SerialConfig(
+        enabled=_bool(raw, "enabled", d.enabled, "serial"),
+        port=_str(raw, "port", d.port, "serial") or d.port,
+        baud=_int(raw, "baud", d.baud, "serial"),
+        publish_interval_s=_float(raw, "publish_interval_s", d.publish_interval_s, "serial"),
+        stale_after_s=_float(raw, "stale_after_s", d.stale_after_s, "serial"),
+        hex=_bool(raw, "hex", d.hex, "serial"),
+        request_timeout_s=_float(raw, "request_timeout_s", d.request_timeout_s, "serial"),
+        reopen_initial_s=_float(raw, "reopen_initial_s", d.reopen_initial_s, "serial"),
+        reopen_max_s=_float(raw, "reopen_max_s", d.reopen_max_s, "serial"),
     )
 
 
@@ -253,10 +298,13 @@ def _parse_mode(value: Any) -> int:
 
 def _parse_daemon(raw: dict[str, Any]) -> DaemonConfig:
     d = DaemonConfig()
-    _check_keys(raw, {"socket", "socket_mode", "state_dir", "log_level", "csv", "mqtt"}, "daemon")
+    _check_keys(raw, {"socket", "socket_mode", "state_dir", "registers", "log_level", "csv", "mqtt"}, "daemon")
     level = str(raw.get("log_level", d.log_level)).upper()
     if level not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
         raise ConfigError("daemon.log_level must be DEBUG, INFO, WARNING or ERROR")
+    registers = raw.get("registers", d.registers)
+    if registers not in REGISTER_PATHS:
+        raise ConfigError(f"daemon.registers must be one of: {', '.join(REGISTER_PATHS)}")
     csv_raw = _mapping(raw.get("csv"), "daemon.csv")
     _check_keys(csv_raw, {"enabled", "path"}, "daemon.csv")
     mqtt_raw = _mapping(raw.get("mqtt"), "daemon.mqtt")
@@ -266,6 +314,7 @@ def _parse_daemon(raw: dict[str, Any]) -> DaemonConfig:
         socket=Path(_str(raw, "socket", str(d.socket), "daemon") or d.socket),
         socket_mode=_parse_mode(raw.get("socket_mode", d.socket_mode)),
         state_dir=Path(_str(raw, "state_dir", str(d.state_dir), "daemon") or d.state_dir),
+        registers=registers,
         log_level=level,
         csv=CsvConfig(
             enabled=_bool(csv_raw, "enabled", True, "daemon.csv"),

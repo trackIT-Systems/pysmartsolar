@@ -25,21 +25,17 @@ from typing import Any
 
 from smartsolar.ble import Advertisement, BleBackend, GattLink
 from smartsolar.config import GattConfig
+from smartsolar.backoff import Backoff
 from smartsolar.errors import ConnectError, NoDataError, NotConnectedError, ProtocolError, SmartsolarError, WriteFailed
 from smartsolar.gatt_session import GattSession
-from smartsolar.reading import Event, Reading
+from smartsolar.reading import Event, Reading, device_id
+from smartsolar.registers import check_write, write_result
 from smartsolar.state import GattStats
 from smartsolar.vreg import (
     POLLED_VREGS,
-    VREG_BATTERY_TYPE,
-    VREG_BATTERY_VOLTAGE_ACTUAL,
     VREG_KEY,
-    VREG_VOLTAGE_RANGE_MAX,
-    VREG_VOLTAGE_RANGE_MIN,
     VREGS,
-    WRITABLE,
     WriteItem,
-    check_voltage_limits,
     decode_vreg,
 )
 
@@ -65,25 +61,6 @@ class GattState(StrEnum):
 
 class _Stopping(Exception):
     """Raised inside run() to unwind when stop() was requested."""
-
-
-class Backoff:
-    """Full-jitter exponential backoff: delay = random() * min(maximum, initial * factor**n)."""
-
-    def __init__(self, initial: float, maximum: float, factor: float = 2.0, rng: Callable[[], float] = random.random) -> None:
-        self.initial = initial
-        self.maximum = maximum
-        self.factor = factor
-        self._rng = rng
-        self.attempt = 0
-
-    def next(self) -> float:
-        ceiling = min(self.maximum, self.initial * self.factor**self.attempt)
-        self.attempt += 1
-        return self._rng() * ceiling
-
-    def reset(self) -> None:
-        self.attempt = 0
 
 
 class GattManager:
@@ -197,7 +174,7 @@ class GattManager:
             value = decode_vreg(vreg, session.values[vreg]) if vreg in VREGS else None
             if value is not None:
                 values.append(value)
-        return Reading(device.address, "gatt", datetime.now().astimezone(), tuple(values))
+        return Reading(device_id(device.address, device.name), "gatt", datetime.now().astimezone(), tuple(values))
 
     @staticmethod
     def _raw(session: GattSession) -> dict[str, str]:
@@ -416,29 +393,8 @@ class GattManager:
                     future.set_exception(exc)
 
     async def _check_write(self, session: GattSession, item: WriteItem) -> None:
-        """Refuse what the device would turn into error 119, or silently ignore (a charge voltage with a preset battery type)."""
-        writable = WRITABLE[item.name]
-        if not (writable.needs_user_type or writable.check):
-            return
         timeout = self.cfg.request_timeout_s
-        if writable.needs_user_type:
-            battery_type = await self._until_stop(session.request(VREG_BATTERY_TYPE, timeout))
-            if bytes(battery_type)[:1] != b"\xff":
-                raise WriteFailed(f"{item.name}: the battery type is a preset ({bytes(battery_type)[0]}), the device only takes this setting with battery_type=user")
-        if writable.check:
-            system = 12
-            try:
-                system = bytes(await self._until_stop(session.request(VREG_BATTERY_VOLTAGE_ACTUAL, timeout)))[0] or 12
-            except ProtocolError:
-                pass
-            vrange = None
-            try:
-                low = await self._until_stop(session.request(VREG_VOLTAGE_RANGE_MIN, timeout))
-                high = await self._until_stop(session.request(VREG_VOLTAGE_RANGE_MAX, timeout))
-                vrange = (int.from_bytes(low, "little") * 0.01, int.from_bytes(high, "little") * 0.01)
-            except ProtocolError:
-                pass  # an older firmware does not report it: the 12 V limits scaled by the system voltage
-            check_voltage_limits(item, writable, system_voltage=system, vrange=vrange)
+        await check_write(lambda vreg: self._until_stop(session.request(vreg, timeout)), item)
 
     async def _do_writes(self, adv: Advertisement, session: GattSession) -> None:
         """Run the queued writes: note the old value, write, check the echo, read the register back."""
@@ -456,16 +412,8 @@ class GattManager:
                             old_raw = None
                     await self._until_stop(session.write_register(item.vreg, item.raw, self.cfg.request_timeout_s))
                     read_raw = await self._until_stop(session.request(item.vreg, self.cfg.request_timeout_s))
-                    ok = bytes(read_raw) == item.raw
-                    old = decode_vreg(item.vreg, old_raw) if old_raw is not None else None
-                    new = decode_vreg(item.vreg, read_raw)
-                    result = {
-                        "name": item.name,
-                        "requested": item.value,
-                        "old": old.value if old else None,
-                        "value": new.value if new else None,
-                        "ok": ok,
-                    }
+                    result = write_result(item, old_raw, read_raw)
+                    ok = result["ok"]
                     results.append(result)
                     self._event("register_written", adv.address, name=item.name, old=result["old"], new=result["value"], requested=item.value, ok=ok)
                     if not ok:

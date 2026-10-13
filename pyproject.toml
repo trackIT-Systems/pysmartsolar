@@ -17,6 +17,7 @@ dependencies = [
     "cryptography",
     "paho-mqtt>=2",
     "PyYAML>=6",
+    "pyserial>=3.5",
 ]
 
 [project.optional-dependencies]

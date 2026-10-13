@@ -1,6 +1,7 @@
 # smartsolard configuration. Every value shown is the default.
 
 ble:
+  enabled: true                  # false: no Bluetooth at all (a system that only has the VE.Direct cable)
   # adapter: hci0
   # address: "F7:48:18:8A:77:9D"   # pin a device (disables RSSI selection and switching)
   select_window_s: 10            # listen this long before the first device selection
@@ -30,6 +31,20 @@ gatt:
   backoff_max_s: 300
   publish_interval_s: 60         # hold mode
 
+serial:
+  # The VE.Direct cable (19200 baud). Text blocks arrive every second; with hex on, the same
+  # cable also reads and writes settings (smartsolar write / profile load). Only one program may
+  # read the port: do not enable this while another reader (e.g. mqttutil's vedirect) uses it.
+  enabled: false
+  port: /dev/ttyUSBvd0
+  baud: 19200
+  publish_interval_s: 60
+  stale_after_s: 10
+  hex: true                      # false: read only, the daemon never sends a byte
+  request_timeout_s: 2
+  reopen_initial_s: 2            # the port went away (USB unplugged): retry with backoff
+  reopen_max_s: 60
+
 keys:
   # Instant Readout key of each device (VictronConnect: device > settings > Product info >
   # Instant readout via Bluetooth). If a device has no key here, the daemon reads it over GATT
@@ -40,6 +55,7 @@ daemon:
   socket: /run/smartsolar/smartsolar.sock
   socket_mode: "0660"            # octal
   state_dir: /var/lib/smartsolar # fetched keys
+  registers: auto                # settings go through: auto (the cable if it answers, else GATT), serial, gatt
   log_level: INFO
   csv:
     enabled: true

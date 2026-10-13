@@ -459,3 +459,16 @@ def test_profile_save_writes_a_settings_file_that_can_be_read_back(capsys, tmp_p
     p = profiles.load_profile(out)
     assert p.values["float_voltage"] == 13.7 and p.values["load_output_control"] == "conventional1" and p.product_id == 0xA053 and p.system_voltage == 12
     assert p.description == "" and p.min_firmware == 0x164
+
+
+def test_format_status_with_the_cable_and_without_bluetooth():
+    serial = {
+        "port": "/dev/ttyUSBvd0", "state": "open", "connected": True, "hex": True, "serial": "HQ22294ZGEU", "product_id": "0xA053", "firmware": "1.64",
+        "last_block_age_s": 0.4, "opens": 1, "losses": 0, "blocks": 120, "bad_checksum": 2, "resyncs": 0, "hex_frames": 5, "bad_hex": 0,
+        "hex_requests": 3, "hex_timeouts": 0, "last_error": None, "backoff_s": None, "unknown_fields": {},
+    }
+    lines = lines_of(cli.format_status(status(serial=serial, ble=False), NOW))
+    assert lines["ble"] == "disabled" and "gatt" not in lines and "device" not in lines
+    assert lines["vedirect"] == "/dev/ttyUSBvd0 open, HQ22294ZGEU product 0xA053 firmware 1.64, hex on   last block 0s ago, 120 blocks, 2 bad checksum"
+    assert lines_of(cli.format_status(status(serial={**serial, "hex": False, "state": "backoff", "last_error": "cannot open", "last_block_age_s": None}), NOW))["vedirect"].startswith("/dev/ttyUSBvd0 backoff")
+    assert "vedirect" not in lines_of(cli.format_status(STATUS, NOW))

@@ -10,7 +10,7 @@ from typing import Any
 
 from smartsolar.reading import Reading, utc_iso
 
-BLOCKS = ("advert", "gatt")
+BLOCKS = ("advert", "gatt", "vedirect")
 
 
 @dataclass
@@ -21,7 +21,7 @@ class BlockState:
 
 
 class Cache:
-    """The last reading per source ("advert", "gatt"), with age and staleness.
+    """The last reading per source ("advert", "gatt", "vedirect"), with age and staleness.
 
     ``stale_after`` gives the age in seconds from which a block counts as stale; None means the
     source is not in use and the block is never reported as stale.
@@ -41,9 +41,10 @@ class Cache:
     def fail(self, block: str, error: str) -> None:
         self.blocks[block].last_error = error
 
-    def clear(self) -> None:
-        """Forget everything, e.g. after switching to another device."""
-        self.blocks = {name: BlockState() for name in BLOCKS}
+    def clear(self, *names: str) -> None:
+        """Forget the given blocks (all if none are given), e.g. the BLE ones after switching to another device."""
+        for name in names or BLOCKS:
+            self.blocks[name] = BlockState()
 
     def age_s(self, block: str) -> float | None:
         ok_at = self.blocks[block].ok_at
@@ -88,5 +89,15 @@ class GattStats:
     disconnects: int = 0
     pairings: int = 0
     polls: int = 0
+    last_error: str | None = None
+    backoff_s: float | None = None
+
+
+@dataclass
+class SerialStats:
+    opens: int = 0
+    losses: int = 0
+    hex_requests: int = 0
+    hex_timeouts: int = 0
     last_error: str | None = None
     backoff_s: float | None = None

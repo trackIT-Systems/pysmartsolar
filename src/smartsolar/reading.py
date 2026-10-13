@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -25,6 +26,25 @@ def mac12(address: str) -> str:
     return address.replace(":", "").lower()
 
 
+SERIAL_RE = re.compile(r"\b[A-Z]{2}\d{4}[A-Z0-9]{5}\b")
+
+
+def serial_from_name(name: str | None) -> str | None:
+    """The serial number in a BLE name such as "SmartSolar HQ22294ZGEU", if there is one."""
+    match = SERIAL_RE.search(name or "")
+    return match.group(0) if match else None
+
+
+def device_id(address: str, name: str | None = None) -> str:
+    """How a device is called in readings, topics and the CSV: its serial number, else its MAC address."""
+    return serial_from_name(name) or address
+
+
+def topic_id(device: str) -> str:
+    """A device id as a topic level: serial numbers as they are, MAC addresses as 12 hex digits."""
+    return mac12(device) if ":" in device else device
+
+
 @dataclass(frozen=True)
 class Value:
     name: str
@@ -42,7 +62,10 @@ class Value:
 
 @dataclass(frozen=True)
 class Reading:
-    """The values of one source ("advert" or "gatt") of one device at one time."""
+    """The values of one source ("advert", "gatt" or "vedirect") of one device at one time.
+
+    ``device`` is the serial number, or the MAC address when no serial is known (see ``device_id``).
+    """
 
     device: str
     block: str

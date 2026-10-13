@@ -9,10 +9,10 @@ from pathlib import Path
 import cbor2
 import pytest
 
-from fakes import A, B, TEST_KEY, FakeBackend, FakeMqtt, advert, run, until
+from fakes import A, B, TEST_KEY, FakeBackend, FakeMqtt, FakeSerialOpener, advert, run, until
 from smartsolar import daemon as daemon_module
 from smartsolar import ipc
-from smartsolar.config import AdvertConfig, AppConfig, BleConfig, CsvConfig, DaemonConfig, GattConfig, MqttConfig
+from smartsolar.config import AdvertConfig, AppConfig, BleConfig, CsvConfig, DaemonConfig, GattConfig, MqttConfig, SerialConfig
 from smartsolar.daemon import Daemon
 from smartsolar.errors import DaemonError
 from smartsolar.outputs import Outputs
@@ -25,7 +25,7 @@ TOPIC = "tracker/smartsolar/f748188a779d"
 class Env:
     """A daemon wired to the fake backend, with real socket and real CSV/MQTT sinks."""
 
-    def __init__(self, *, mode="off", keys="default", **gatt):
+    def __init__(self, *, mode="off", keys="default", ble=True, serial=None, registers="auto", hex=True, topic_id=None, **gatt):
         self.dir = Path(tempfile.mkdtemp(dir="/tmp", prefix="ss-"))
         self.sock = self.dir / "run" / "s.sock"
         self.csv_path = self.dir / "data" / "out.csv"
@@ -35,22 +35,27 @@ class Env:
         gatt_cfg = dict(keepalive_s=0.05, collect_s=2, connect_timeout_s=1, pair_timeout_s=1, request_timeout_s=1,
                         backoff_initial_s=0.01, backoff_max_s=0.02, publish_interval_s=0.1, poll_interval_s=30)
         gatt_cfg.update(gatt)
+        self.opener = FakeSerialOpener(*(serial or []))
+        self.ble = ble
+        self.topic = f"tracker/smartsolar/{topic_id}" if topic_id else TOPIC
         self.config = AppConfig(
-            ble=BleConfig(select_window_s=0),
+            ble=BleConfig(enabled=ble, select_window_s=0),
             advert=AdvertConfig(publish_interval_s=0.05, stale_after_s=1.0),
             gatt=GattConfig(mode=mode, **gatt_cfg),
             keys={A: TEST_KEY} if keys == "default" else keys,
-            daemon=DaemonConfig(socket=self.sock, state_dir=self.state_dir, csv=CsvConfig(path=self.dir), mqtt=MqttConfig()),
+            serial=SerialConfig(enabled=serial is not None, hex=hex, publish_interval_s=0.05, stale_after_s=1.0, request_timeout_s=0.5,
+                                reopen_initial_s=0.01, reopen_max_s=0.02),
+            daemon=DaemonConfig(socket=self.sock, state_dir=self.state_dir, registers=registers, csv=CsvConfig(path=self.dir), mqtt=MqttConfig()),
         )
         outputs = Outputs([CsvOutput(self.csv_path), MqttOutput(self.config.daemon.mqtt, hostname="tracker", client=self.mqtt)])
-        self.daemon = Daemon(self.config, backend=self.backend, outputs=outputs, hostname="tracker")
+        self.daemon = Daemon(self.config, backend=self.backend if ble else None, outputs=outputs, hostname="tracker", serial_opener=self.opener)
         self.task = None
         self.exit_code = None
         self.nonce = 0
 
     async def __aenter__(self):
         self.task = asyncio.create_task(self.daemon.run(handle_signals=False))
-        await until(lambda: self.sock.exists() and self.backend.scanning)
+        await until(lambda: self.sock.exists() and (self.backend.scanning or not self.ble))
         return self
 
     async def __aexit__(self, *exc):
@@ -75,7 +80,7 @@ class Env:
         return await asyncio.to_thread(ipc.request, self.sock, cmd, args, timeout=5)
 
     def published(self, suffix):
-        return [p for t, p, _ in self.mqtt.published if t == f"{TOPIC}/{suffix}"]
+        return [p for t, p, _ in self.mqtt.published if t == f"{self.topic}/{suffix}"]
 
 
 def test_advertisements_are_decoded_published_and_the_daemon_stops_cleanly():

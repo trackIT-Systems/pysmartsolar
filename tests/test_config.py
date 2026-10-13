@@ -97,3 +97,27 @@ def test_the_example_config_is_valid_and_equals_the_defaults():
     config = load_config(example)
     assert config.gatt.mode == "off" and config.keys == {}
     assert config == AppConfig(path=example)
+
+
+def test_the_serial_section_and_ble_off():
+    config = parse_config({"ble": {"enabled": False}, "serial": {"enabled": True, "port": "/dev/ttyUSB1", "hex": False, "publish_interval_s": 30}})
+    assert not config.ble.enabled and config.serial.enabled and config.serial.port == "/dev/ttyUSB1" and not config.serial.hex
+    assert config.serial.baud == 19200 and config.serial.publish_interval_s == 30
+    assert parse_config({}).serial.enabled is False and parse_config({}).daemon.registers == "auto"
+
+
+@pytest.mark.parametrize(
+    "raw, message",
+    [
+        ({"ble": {"enabled": False}}, "nothing to do"),
+        ({"serial": {"enabled": True, "baud": 0}}, "baud"),
+        ({"serial": {"bogus": 1}}, "Unknown key"),
+        ({"daemon": {"registers": "radio"}}, "daemon.registers"),
+        ({"daemon": {"registers": "serial"}}, "serial.enabled and serial.hex"),
+        ({"serial": {"enabled": True, "hex": False}, "daemon": {"registers": "serial"}}, "serial.enabled and serial.hex"),
+        ({"ble": {"enabled": False}, "serial": {"enabled": True}, "daemon": {"registers": "gatt"}}, "ble.enabled is false"),
+    ],
+)
+def test_rejects_serial_and_ble_combinations(raw, message):
+    with pytest.raises(ConfigError, match=message):
+        parse_config(raw)

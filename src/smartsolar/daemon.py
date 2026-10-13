@@ -14,6 +14,7 @@ import signal
 import socket
 import sys
 import time
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -21,15 +22,16 @@ from typing import Any
 from smartsolar import __version__
 from smartsolar.ble import BleBackend
 from smartsolar.config import AppConfig, load_config
-from smartsolar.errors import BadRequest, ConfigError, NoDataError, NotConnectedError, SmartsolarError
+from smartsolar.errors import BadRequest, ConfigError, ConnectError, NoDataError, NotConnectedError, ProtocolError, SmartsolarError
 from smartsolar.gatt_manager import GattManager, GattState
-from smartsolar.keys import SOURCE_MISSING, KeyStore
+from smartsolar.keys import KeyStore
 from smartsolar.outputs import Output, Outputs
 from smartsolar.outputs.csv import CsvOutput, csv_session_path
 from smartsolar.outputs.mqtt import MqttOutput
-from smartsolar.reading import Event, Reading, local_iso, utc_iso
+from smartsolar.reading import Event, Reading, device_id, local_iso, utc_iso
 from smartsolar.server import ControlServer
-from smartsolar.state import BLOCKS, AdvertStats, Cache, GattStats
+from smartsolar.serial_manager import SerialManager
+from smartsolar.state import BLOCKS, AdvertStats, Cache, GattStats, SerialStats
 from smartsolar.tracker import DeviceTracker
 from smartsolar.vreg import (
     PROFILE_CONTEXT_VREGS,
@@ -51,6 +53,19 @@ SCAN_WATCHDOG_S = 180.0
 SCAN_CHECK_S = 5.0
 SELECTION_INTERVAL_S = 1.0
 POLL_TIMEOUT_MARGIN_S = 30.0
+
+
+class NoBackend:
+    """Stands in for the BLE stack when ble.enabled is false: nothing in the daemon starts it."""
+
+    async def start_scan(self, on_advert) -> None:
+        raise ConnectError("Bluetooth is disabled (ble.enabled is false)")
+
+    async def stop_scan(self) -> None:
+        return
+
+    async def connect(self, *args: Any, **kwargs: Any):
+        raise ConnectError("Bluetooth is disabled (ble.enabled is false)")
 
 
 def build_outputs(config: AppConfig, hostname: str | None = None) -> Outputs:
@@ -88,19 +103,27 @@ class Daemon:
         outputs: Outputs | None = None,
         hostname: str | None = None,
         keys: KeyStore | None = None,
+        serial_opener: Any | None = None,
     ) -> None:
         self.config = config
         self.hostname = hostname or socket.gethostname()
-        if backend is None:
+        if backend is None and config.ble.enabled:
             from smartsolar.ble.bleak_backend import BleakBackend
 
             backend = BleakBackend(config.ble.adapter)
-        self.backend = backend
+        self.backend = backend if backend is not None else NoBackend()
         self.outputs = outputs if outputs is not None else build_outputs(config, self.hostname)
         self.keys = keys if keys is not None else KeyStore(config.keys, config.daemon.state_dir)
         gatt = config.gatt
         gatt_stale = {"off": None, "hold": 3 * gatt.publish_interval_s, "poll": 3 * gatt.poll_interval_s}[gatt.mode]
-        self.cache = Cache({"advert": config.advert.stale_after_s, "gatt": gatt_stale})
+        ble_on = config.ble.enabled
+        self.cache = Cache(
+            {
+                "advert": config.advert.stale_after_s if ble_on else None,
+                "gatt": gatt_stale if ble_on else None,
+                "vedirect": config.serial.stale_after_s if config.serial.enabled else None,
+            }
+        )
         started = datetime.now().astimezone()
         self.advert_stats = AdvertStats(started=started)
         self.gatt_stats = GattStats()
@@ -125,14 +148,40 @@ class Daemon:
             self.gatt_stats,
             on_state=self._on_gatt_state,
         )
+        self.serial_stats = SerialStats()
+        self.serial: SerialManager | None = None
+        if config.serial.enabled:
+            kwargs = {} if serial_opener is None else {"opener": serial_opener}
+            self.serial = SerialManager(
+                config.serial, cache=self.cache, emit_event=self._on_event, stats=self.serial_stats, on_serial=self._on_serial, **kwargs
+            )
         self.server = ControlServer(config.daemon.socket, config.daemon.socket_mode, self._handlers())
         self.stop_event = asyncio.Event()
         self._started_mono = time.monotonic()
-        self._last_published: Reading | None = None
+        self._last_published: dict[str, Reading | None] = {}
 
     # -- events and state ---------------------------------------------------
 
+    def _device_id(self, address: str | None) -> str | None:
+        """The id a device goes by in outputs: its serial number if known, else its MAC address."""
+        if address is None:
+            return None
+        seen = self.tracker.seen.get(address)
+        return device_id(address, seen.name if seen else None)
+
+    def _current_id(self) -> str | None:
+        if self.serial is not None and self.serial.serial:
+            return self.serial.serial
+        return self._device_id(self.tracker.current_address)
+
+    def _on_serial(self, serial: str | None) -> None:
+        if self.config.ble.enabled:
+            self.tracker.set_serial(serial)
+        self.outputs.emit_state(self.state_payload())
+
     def _on_event(self, event: Event) -> None:
+        if event.device is not None and ":" in event.device:
+            event = replace(event, device=self._device_id(event.device))
         self.outputs.emit_event(event)
         if event.kind == "key_rejected":
             self.gatt.poke()
@@ -142,7 +191,7 @@ class Daemon:
         self.outputs.emit_state(self.state_payload())
 
     def _on_switch(self) -> None:
-        self.cache.clear()
+        self.cache.clear("advert", "gatt")
         self.gatt.device_changed()
 
     def _on_gatt_state(self, state: GattState) -> None:
@@ -158,10 +207,12 @@ class Daemon:
         return {
             "_time": local_iso(datetime.now().astimezone()),
             "state": "running",
-            "device": current.address if current else None,
+            "device": self._current_id(),
+            "address": current.address if current else None,
             "rssi": round(seen.rssi) if seen else None,
-            "gatt_mode": self.config.gatt.mode,
-            "gatt": self.gatt.state.value,
+            "gatt_mode": self.config.gatt.mode if self.config.ble.enabled else None,
+            "gatt": self.gatt.state.value if self.config.ble.enabled else None,
+            "serial": None if self.serial is None else self.serial.state,
         }
 
     # -- lifecycle ----------------------------------------------------------
@@ -171,15 +222,29 @@ class Daemon:
         if handle_signals:
             for sig in (signal.SIGTERM, signal.SIGINT):
                 loop.add_signal_handler(sig, self.stop_event.set)
-        self._on_event(Event(datetime.now().astimezone(), "daemon_started", None, {"version": __version__, "gatt_mode": self.config.gatt.mode}))
+        self._on_event(
+            Event(
+                datetime.now().astimezone(),
+                "daemon_started",
+                None,
+                {"version": __version__, "ble": self.config.ble.enabled, "gatt_mode": self.config.gatt.mode, "serial": self.serial is not None},
+            )
+        )
         self.outputs.emit_state(self.state_payload())
         await self.server.start()
-        tasks = [
-            asyncio.create_task(self._scan_supervisor(), name="scan"),
-            asyncio.create_task(self._selection_loop(), name="selection"),
-            asyncio.create_task(self._publish_loop(), name="publisher"),
-            asyncio.create_task(self.gatt.run(), name="gatt"),
-        ]
+        tasks = []
+        if self.config.ble.enabled:
+            tasks += [
+                asyncio.create_task(self._scan_supervisor(), name="scan"),
+                asyncio.create_task(self._selection_loop(), name="selection"),
+                asyncio.create_task(self._publish_loop("advert", self.config.advert.publish_interval_s), name="publisher-advert"),
+                asyncio.create_task(self.gatt.run(), name="gatt"),
+            ]
+        if self.serial is not None:
+            tasks += [
+                asyncio.create_task(self.serial.run(), name="serial"),
+                asyncio.create_task(self._publish_loop("vedirect", self.config.serial.publish_interval_s), name="publisher-vedirect"),
+            ]
         stopper = asyncio.create_task(self.stop_event.wait())
         exit_code = 0
         try:
@@ -200,10 +265,11 @@ class Daemon:
             if task.get_name() != "gatt":
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        try:
-            await self.backend.stop_scan()
-        except Exception as exc:
-            log.warning("stopping the scan failed: %s", exc)
+        if self.config.ble.enabled:
+            try:
+                await self.backend.stop_scan()
+            except Exception as exc:
+                log.warning("stopping the scan failed: %s", exc)
         self._on_event(Event(datetime.now().astimezone(), "daemon_stopped"))
         self.outputs.emit_state({**self.state_payload(), "state": "offline", "device": None, "rssi": None})
         self.outputs.close()
@@ -237,14 +303,14 @@ class Daemon:
             self.tracker.review()
             await asyncio.sleep(SELECTION_INTERVAL_S)
 
-    async def _publish_loop(self) -> None:
+    async def _publish_loop(self, block: str, interval_s: float) -> None:
+        """Hand the newest reading of a source to the outputs every interval (a source delivers about one a second)."""
         while True:
-            await asyncio.sleep(self.config.advert.publish_interval_s)
-            state = self.cache.blocks["advert"]
-            reading = state.reading
-            if reading is None or reading is self._last_published or self.cache.is_stale("advert"):
+            await asyncio.sleep(interval_s)
+            reading = self.cache.blocks[block].reading
+            if reading is None or reading is self._last_published.get(block) or self.cache.is_stale(block):
                 continue
-            self._last_published = reading
+            self._last_published[block] = reading
             self.outputs.emit_reading(reading)
 
     # -- commands -----------------------------------------------------------
@@ -309,6 +375,9 @@ class Daemon:
         return {
             "version": __version__,
             "uptime_s": round(now - self._started_mono),
+            "id": self._current_id(),
+            "ble": self.config.ble.enabled,
+            "serial": None if self.serial is None else self.serial.describe(),
             "device": device,
             "devices_seen": len(tracker.seen),
             "blocks": {name: self.cache.describe(name) for name in BLOCKS},
@@ -334,9 +403,18 @@ class Daemon:
                 "stale": description["stale"],
                 "values": [v.as_dict() for v in state.reading.values] if state.reading else [],
             }
-        return {"device": self.tracker.current_address, "blocks": blocks}
+        return {"device": self._current_id(), "blocks": blocks}
 
     async def _read_block(self, name: str) -> Reading:
+        if name == "vedirect":
+            reading = self.cache.blocks["vedirect"].reading
+            if self.serial is None:
+                raise NoDataError("serial.enabled is false")
+            if reading is None or self.cache.is_stale("vedirect"):
+                raise NoDataError(f"no text block received on {self.config.serial.port} in the last {self.config.serial.stale_after_s:g} s (cable? port busy?)")
+            return reading
+        if not self.config.ble.enabled:
+            raise NoDataError("ble.enabled is false")
         if name == "advert":
             reading = self.cache.blocks["advert"].reading
             if reading is None or self.cache.is_stale("advert"):
@@ -364,25 +442,33 @@ class Daemon:
                 if len(names) == 1:
                     raise
                 blocks[name] = {"error": str(exc)}
-        result: dict[str, Any] = {"device": self.tracker.current_address, "blocks": blocks}
+        result: dict[str, Any] = {"device": self._current_id(), "blocks": blocks}
         if args.get("raw") and "gatt" in names and "values" in blocks.get("gatt", {}):
             result["raw"] = self.gatt.raw_registers()
         return result
 
+    def _need_ble(self) -> None:
+        if not self.config.ble.enabled:
+            raise NoDataError("ble.enabled is false")
+
     async def _cmd_reconnect(self, args: dict[str, Any]) -> dict[str, Any]:
+        self._need_ble()
         if self.config.gatt.mode == "off":
             raise NoDataError("gatt.mode is off, there is no connection to renew")
         self.gatt.request_reconnect()
         return {"requested": True}
 
     async def _cmd_rescan(self, args: dict[str, Any]) -> dict[str, Any]:
+        self._need_ble()
         self.tracker.reselect()
         return await self._cmd_scan(args)
 
     async def _cmd_scan(self, args: dict[str, Any]) -> dict[str, Any]:
+        self._need_ble()
         return {"devices": self.tracker.scan_table()}
 
     async def _cmd_fetch_key(self, args: dict[str, Any]) -> dict[str, Any]:
+        self._need_ble()
         address = self.tracker.current_address
         if address is None:
             raise NoDataError("no device selected yet")
@@ -394,18 +480,64 @@ class Daemon:
         return result
 
 
+    # -- registers: over the cable or over GATT ------------------------------
+
+    def _register_paths(self, args: dict[str, Any]) -> list[str]:
+        """Which ways to the registers to try, in order (``via`` in the request, else daemon.registers)."""
+        via = args.get("via") or self.config.daemon.registers
+        if via not in ("auto", "serial", "gatt"):
+            raise BadRequest(f"via must be auto, serial or gatt, not {via!r}")
+        serial_ok = self.serial is not None and self.config.serial.hex
+        ble_ok = self.config.ble.enabled
+        if via == "serial":
+            if not serial_ok:
+                raise NoDataError("the VE.Direct cable with the HEX protocol is not enabled (serial.enabled, serial.hex)")
+            return ["serial"]
+        if via == "gatt":
+            if not ble_ok:
+                raise NoDataError("ble.enabled is false")
+            return ["gatt"]
+        paths = [p for p, ok in (("serial", serial_ok and self.serial is not None and self.serial.connected), ("gatt", ble_ok)) if ok]
+        if not paths:
+            raise NoDataError("no way to reach the registers: the VE.Direct cable is not connected (or serial.hex is off) and Bluetooth is disabled")
+        return paths
+
+    async def _via(self, args: dict[str, Any], run: Any) -> Any:
+        """Run ``run(path)`` over the first way that works. Only a missing link or no answer moves on to the next one."""
+        paths = self._register_paths(args)
+        problems = []
+        for path in paths:
+            try:
+                return await run(path)
+            except (NotConnectedError, NoDataError, ProtocolError, asyncio.TimeoutError) as exc:
+                if len(paths) == 1:
+                    raise
+                problems.append(f"{path}: {exc or type(exc).__name__}")
+        raise NoDataError("; ".join(problems))
+
+    def _timeout(self, path: str, requests: int) -> float:
+        if path == "serial":
+            return self.config.serial.request_timeout_s * (2 * requests + 2) + 5.0
+        cfg = self.config.gatt
+        return cfg.connect_timeout_s + cfg.pair_timeout_s + cfg.request_timeout_s * (requests + 2) + POLL_TIMEOUT_MARGIN_S
+
     async def _cmd_settings(self, args: dict[str, Any]) -> dict[str, Any]:
         """Every writable setting, read live (connects on demand), with what a profile is checked against."""
-        if self.tracker.current_address is None:
-            raise NoDataError("no device selected yet")
         names = args.get("names") or [n for n in WRITABLE if n != "device_mode"]
         unknown = [n for n in names if n not in WRITABLE]
         if unknown:
             raise BadRequest(f"not a writable register: {', '.join(map(str, unknown))}")
         vregs = [WRITABLE[n].vreg for n in names] + list(PROFILE_CONTEXT_VREGS)
-        cfg = self.config.gatt
-        timeout = cfg.connect_timeout_s + cfg.pair_timeout_s + cfg.request_timeout_s * (len(vregs) + 2) + POLL_TIMEOUT_MARGIN_S
-        raw = await asyncio.wait_for(self.gatt.request_read(vregs), timeout)
+
+        async def read(path: str) -> tuple[str, dict[int, Any]]:
+            if path == "serial":
+                assert self.serial is not None
+                return path, await asyncio.wait_for(self.serial.read(vregs), self._timeout(path, len(vregs)))
+            if self.tracker.current_address is None:
+                raise NoDataError("no device selected yet")
+            return path, await asyncio.wait_for(self.gatt.request_read(vregs), self._timeout(path, len(vregs)))
+
+        path, raw = await self._via(args, read)
         values = []
         for name in names:
             writable = WRITABLE[name]
@@ -414,7 +546,8 @@ class Daemon:
             values.append({"name": name, "friendly": writable.friendly, "unit": writable.unit, "value": writable.decode(raw[writable.vreg])})
         vmin, vmax = raw.get(VREG_VOLTAGE_RANGE_MIN), raw.get(VREG_VOLTAGE_RANGE_MAX)
         return {
-            "device": self.tracker.current_address,
+            "device": self._current_id(),
+            "via": path,
             "product_id": product_id(raw[VREG_PRODUCT_ID]) if VREG_PRODUCT_ID in raw else None,
             "firmware": firmware_version(raw[VREG_FIRMWARE]) if VREG_FIRMWARE in raw else None,
             "system_voltage": bytes(raw[VREG_BATTERY_VOLTAGE_ACTUAL])[0] if VREG_BATTERY_VOLTAGE_ACTUAL in raw else None,
@@ -427,12 +560,17 @@ class Daemon:
         if not isinstance(values, dict) or not values:
             raise BadRequest("args.values must be an object of name: value")
         items = build_write(values)  # InvalidWriteError before anything is sent
-        if self.tracker.current_address is None:
-            raise NoDataError("no device selected yet")
-        cfg = self.config.gatt
-        timeout = cfg.connect_timeout_s + cfg.pair_timeout_s + cfg.request_timeout_s * (3 * len(items) + 2) + POLL_TIMEOUT_MARGIN_S
-        results = await asyncio.wait_for(self.gatt.request_write(items), timeout)
-        return {"device": self.tracker.current_address, "written": results}
+
+        async def write(path: str) -> tuple[str, list[dict[str, Any]]]:
+            if path == "serial":
+                assert self.serial is not None
+                return path, await asyncio.wait_for(self.serial.write(items), self._timeout(path, 3 * len(items)))
+            if self.tracker.current_address is None:
+                raise NoDataError("no device selected yet")
+            return path, await asyncio.wait_for(self.gatt.request_write(items), self._timeout(path, 3 * len(items)))
+
+        path, results = await self._via(args, write)
+        return {"device": self._current_id(), "via": path, "written": results}
 
 
 def main(argv: list[str] | None = None) -> int:

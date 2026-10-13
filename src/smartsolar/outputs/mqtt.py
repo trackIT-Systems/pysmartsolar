@@ -9,7 +9,7 @@ import cbor2
 import paho.mqtt.client as mqtt
 
 from smartsolar.config import MqttConfig
-from smartsolar.reading import Event, Reading, mac12
+from smartsolar.reading import Event, Reading, topic_id
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ def make_client() -> mqtt.Client:
 class MqttOutput:
     """Publishes every message as JSON and/or CBOR (same dict, different encoding).
 
-    * ``{host}/smartsolar/{mac12}/{fmt}``: one message per block read
+    * ``{host}/smartsolar/{serial}/{fmt}``: one message per block read (the MAC address as 12 hex digits if the serial is unknown)
     * ``{host}/smartsolar/state/{fmt}``: connection state, retained; the will sets it to offline
     * ``{host}/smartsolar/events/{fmt}``: connection events
     """
@@ -58,7 +58,7 @@ class MqttOutput:
             )
 
     def emit_reading(self, reading: Reading) -> None:
-        self._publish(mac12(reading.device), reading.payload())
+        self._publish(topic_id(reading.device), reading.payload())
 
     def emit_event(self, event: Event) -> None:
         self._publish("events", event.payload())
