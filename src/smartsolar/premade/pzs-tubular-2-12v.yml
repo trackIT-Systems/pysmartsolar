@@ -1,5 +1,0 @@
-name: pzs-tubular-2-12v
-description: PzS tubular plate traction or OPzS batteries (position 5), 12 V system
-values:
-  absorption_voltage: 15.1
-  float_voltage: 13.8

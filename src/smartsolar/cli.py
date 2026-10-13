@@ -262,29 +262,46 @@ def cmd_write(args: argparse.Namespace, socket: Path) -> int:
 
 
 def format_changes(changes: list[profiles.Change]) -> str:
-    return table([[c.name, "?" if c.old is None else fmt_value(c.old), "->", fmt_value(c.new), c.unit] for c in changes])
+    return table([[c.name, "none" if c.old is None else fmt_value(c.old), "->", "none" if c.new is None else fmt_value(c.new), c.unit] for c in changes])
 
 
-def live_settings(socket: Path) -> tuple[str | None, list[dict[str, Any]]]:
-    result = ipc.request(socket, "settings", {}, timeout=180)
-    return result.get("device"), result["values"]
+def live_settings(socket: Path) -> dict[str, Any]:
+    return ipc.request(socket, "settings", {}, timeout=180)
+
+
+def describe_profile(profile: profiles.Profile) -> str:
+    head = [f"{profile.name}" + (f": {profile.description}" if profile.description else "")]
+    meta = []
+    if profile.product_id:
+        meta.append(f"product 0x{profile.product_id:X}")
+    if profile.min_firmware:
+        meta.append(f"firmware from 0x{profile.min_firmware:X}")
+    if profile.system_voltage:
+        meta.append(f"{profile.system_voltage} V system")
+    if meta:
+        head.append(", ".join(meta))
+    rows = [[n, "none" if v is None else fmt_value(v), writable_unit(n)] for n, v in profile.values.items()]
+    out = "\n".join(head) + "\n" + table(rows, ["SETTING", "VALUE", "UNIT"])
+    if profile.ignored:
+        out += f"\n({len(profile.ignored)} other /Settings/ keys of the file are not supported and not imported)"
+    return out
+
+
+def writable_unit(name: str) -> str:
+    from smartsolar.vreg import WRITABLE
+
+    return WRITABLE[name].unit
 
 
 def cmd_profile(args: argparse.Namespace) -> int:
     action = args.profile_cmd
-    if action == "list":
-        found = profiles.list_premade()
-        if args.json:
-            print(json.dumps([{"name": p.name, "description": p.description, "values": p.values} for p in found], indent=2, ensure_ascii=False))
-        else:
-            print(table([[p.name, ", ".join(f"{k}={fmt_value(v)}" for k, v in p.values.items()), p.description] for p in found], ["NAME", "VALUES", "BATTERY"]))
-        return EXIT_OK
     if action == "show":
-        profile = profiles.load_profile(args.profile)
+        profile = profiles.load_profile(args.file)
         if args.json:
-            print(json.dumps({"name": profile.name, "description": profile.description, "values": profile.values}, indent=2, ensure_ascii=False))
+            print(json.dumps({"name": profile.name, "product_id": profile.product_id, "min_firmware": profile.min_firmware, "system_voltage": profile.system_voltage,
+                              "values": profile.values, "ignored": list(profile.ignored)}, indent=2, ensure_ascii=False))
         else:
-            print(profiles.dump_profile(profile).split("\n", 1)[1], end="")
+            print(describe_profile(profile))
         return EXIT_OK
     socket = resolve_socket(args)
     if action == "save":
@@ -297,29 +314,37 @@ def cmd_profile_save(args: argparse.Namespace, socket: Path) -> int:
     if path is not None and path.exists() and not args.force:
         print(f"error: {path} exists, use --force to overwrite", file=sys.stderr)
         return EXIT_USAGE
-    device, values = live_settings(socket)
-    profile = profiles.profile_from_values(values, name=args.name or (path.stem if path else "profile"), description=args.description or "")
-    text = profiles.dump_profile(profile, device=device)
+    live = live_settings(socket)
+    values = {v["name"]: v["value"] for v in live["values"]}
+    blob = profiles.dump_profile(values, product_id=live.get("product_id"), firmware=live.get("firmware"), system_voltage=live.get("system_voltage"), description=args.description or "")
     if path is None:
-        print(text, end="")
+        sys.stdout.buffer.write(blob)
         return EXIT_OK
     try:
-        with open(path, "w" if args.force else "x", encoding="utf-8") as f:
-            f.write(text)
+        with open(path, "wb" if args.force else "xb") as f:
+            f.write(blob)
     except OSError as exc:
         print(f"error: cannot write {path}: {exc.strerror or exc}", file=sys.stderr)
         return EXIT_ERROR
-    print(f"saved {len(profile.values)} settings to {path}")
+    print(f"saved {len(values)} settings to {path} (not yet checked with VictronConnect; smartsolar can read it)")
     return EXIT_OK
 
 
 def cmd_profile_apply(args: argparse.Namespace, socket: Path) -> int:
     """profile diff / profile load: compare with the device, then write what differs and verify."""
-    profile = profiles.load_profile(args.profile)
-    _, current = live_settings(socket)
-    changes = profiles.diff(profile, current)
+    profile = profiles.load_profile(args.file)
+    live = live_settings(socket)
+    blockers = profiles.problems(profile, product_id=live.get("product_id"), firmware=live.get("firmware"), system_voltage=live.get("system_voltage"))
+    if blockers:
+        for b in blockers:
+            print(f"error: {b}", file=sys.stderr)
+        return EXIT_USAGE
+    changes, notes = profiles.plan(profile, live["values"])
     loading = args.profile_cmd == "load" and not args.dry_run
-    outcome: dict[str, Any] = {"profile": profile.name, "changes": [{"name": c.name, "old": c.old, "new": c.new, "unit": c.unit} for c in changes]}
+    outcome: dict[str, Any] = {"profile": profile.name, "changes": [{"name": c.name, "old": c.old, "new": c.new, "unit": c.unit} for c in changes], "notes": notes}
+    if not args.json:
+        for note in notes:
+            print(f"note: {note}")
     if not changes:
         print(f"{profile.name}: the device already has these values, nothing to change" if not args.json else json.dumps(outcome, indent=2, ensure_ascii=False))
         return EXIT_OK
@@ -333,7 +358,7 @@ def cmd_profile_apply(args: argparse.Namespace, socket: Path) -> int:
     refused = confirm_write([f"{c.name} = {fmt_value(c.new)} {c.unit}".rstrip() for c in changes], args.yes)
     if refused is not None:
         return refused
-    result = ipc.request(socket, "write", {"values": {c.name: c.new for c in changes}}, timeout=180)
+    result = ipc.request(socket, "write", {"values": {c.name: c.new for c in changes}}, timeout=300)
     bad = [w for w in result["written"] if not w["ok"]]
     outcome.update(written=True, verified=not bad, mismatched=[w["name"] for w in bad])
     if args.json:
@@ -347,7 +372,7 @@ def cmd_profile_apply(args: argparse.Namespace, socket: Path) -> int:
 
 
 def run(args: argparse.Namespace) -> int:
-    if args.cmd == "profile" and args.profile_cmd in ("list", "show"):
+    if args.cmd == "profile" and args.profile_cmd == "show":
         return cmd_profile(args)
     if args.cmd == "decode":
         return cmd_decode(args)
@@ -414,19 +439,17 @@ def build_parser() -> argparse.ArgumentParser:
     read = sub.add_parser("read", parents=[common], help="newest advertisement values, and GATT values (hold: now, poll: connects now)")
     read.add_argument("block", nargs="?", default="all", choices=["all", "advert", "gatt"])
     read.add_argument("--raw", action="store_true", help="also list every register received over GATT as hex, decoded or not")
-    profile = sub.add_parser("profile", help="save, show and load sets of charge settings (premade battery presets included)")
+    profile = sub.add_parser("profile", help="apply a VictronConnect settings file (.vcsf) to the charger, or save the settings to one")
     psub = profile.add_subparsers(dest="profile_cmd", required=True, metavar="action")
-    psub.add_parser("list", parents=[common], help="list the premade profiles")
-    show = psub.add_parser("show", parents=[common], help="print a profile (works without the daemon)")
-    show.add_argument("profile", metavar="NAME|FILE", help="premade name, or a path (contains / or ends in .yml)")
-    save = psub.add_parser("save", parents=[common], help="save the device's current settings to a file (connects if needed)")
-    save.add_argument("file", metavar="FILE", help="where to write the YAML ('-' for stdout)")
-    save.add_argument("--name", help="profile name (default: the file name)")
-    save.add_argument("--description", help="profile description")
+    show = psub.add_parser("show", parents=[common], help="print what a settings file contains (works without the daemon)")
+    show.add_argument("file", metavar="FILE.vcsf")
+    save = psub.add_parser("save", parents=[common], help="save the device's current settings to a .vcsf file (experimental, connects if needed)")
+    save.add_argument("file", metavar="FILE.vcsf", help="where to write ('-' for stdout)")
+    save.add_argument("--description", help="description stored in the file")
     save.add_argument("--force", action="store_true", help="overwrite an existing file")
-    for action, text in (("diff", "show what loading a profile would change"), ("load", "write a profile to the device: diff, confirm, write, verify")):
+    for action, text in (("diff", "show what loading a settings file would change"), ("load", "write a settings file to the device: check, diff, confirm, write, verify")):
         p = psub.add_parser(action, parents=[common], help=text)
-        p.add_argument("profile", metavar="NAME|FILE", help="premade name, or a path (contains / or ends in .yml)")
+        p.add_argument("file", metavar="FILE.vcsf")
         if action == "load":
             p.add_argument("--dry-run", action="store_true", help="only show the differences")
             p.add_argument("--yes", "-y", action="store_true", help="do not ask for confirmation")

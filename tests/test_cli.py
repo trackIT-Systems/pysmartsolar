@@ -307,7 +307,7 @@ def test_write_errors_from_the_daemon(capsys):
 def test_vregs_writable_lists_the_allowed_values(capsys):
     assert cli.main(["vregs", "--writable"]) == 0
     out = capsys.readouterr().out
-    assert "device_mode" in out and "on, off" in out and "conventional1" in out and "float_voltage" in out and "5..70" in out
+    assert "device_mode" in out and "on, off" in out and "conventional1" in out and "float_voltage" in out and "8..70" in out
     assert cli.main(["vregs", "--writable", "--json"]) == 0
     assert {r["name"] for r in json.loads(capsys.readouterr().out)} >= {"device_mode", "load_output_control"}
 
@@ -332,88 +332,117 @@ def test_help_lists_the_commands(capsys):
     assert exit_.value.code == 2
 
 
-# -- profiles ---------------------------------------------------------------------
+# -- profiles (VictronConnect settings files) -------------------------------------
 
-SETTINGS = {"device": "AA", "values": [
-    {"name": "float_voltage", "friendly": "Float voltage", "unit": "V", "value": 13.5},
-    {"name": "absorption_voltage", "friendly": "Absorption voltage", "unit": "V", "value": 14.5},
-    {"name": "battery_max_current", "friendly": "Battery maximum current", "unit": "A", "value": 15.0},
-    {"name": "load_output_control", "friendly": "Load output control", "unit": "", "value": "conventional1"},
-]}
+from pathlib import Path as _P  # noqa: E402
 
+from smartsolar import profiles  # noqa: E402
 
-def write_profile(path, **values):
-    import yaml
-
-    path.write_text(yaml.safe_dump({"name": "t", "values": values}))
-    return str(path)
+DATA = _P(__file__).parent / "data" / "ve-mppt-75-15-lifepo4.vcsf"
+CONTEXT = {"product_id": 0xA053, "firmware": 0x164, "system_voltage": 12, "voltage_range": [8.0, 17.4]}
 
 
-def test_profile_list_and_show_work_offline(capsys, tmp_path):
-    assert cli.main(["--socket", str(tmp_path / "none.sock"), "profile", "list"]) == 0
+def settings(**changes):
+    values = {
+        "battery_type": "user", "battery_max_current": 15.0, "absorption_voltage": 14.5, "float_voltage": 13.5, "equalisation_voltage": 0.0,
+        "temperature_compensation": 0.0, "absorption_time_limit": 2.0, "adaptive_mode": "off", "auto_equalise_days": 0,
+        "equalisation_current_percent": 0, "equalisation_duration": 2.0, "equalisation_auto_stop": "off", "rebulk_voltage_offset": 0.1,
+        "tail_current": 0.0, "low_temperature_level": 5.0, "low_temperature_current": None, "load_output_control": "conventional1",
+        "load_user_high_voltage": 14.0, "load_user_low_voltage": 10.0, "load_aes_timer": 30, "rx_port_function": "load-config", "tx_port_function": "communication",
+    }
+    values.update(changes)
+    return {"device": "AA", **CONTEXT, "values": [{"name": n, "friendly": n, "unit": "", "value": v} for n, v in values.items()]}
+
+
+def test_profile_show_works_offline(capsys, tmp_path):
+    assert cli.main(["--socket", str(tmp_path / "none.sock"), "profile", "show", str(DATA)]) == 0
     out = capsys.readouterr().out
-    assert "lifepo4-12v" in out and "absorption_voltage=14.2" in out and "load_output_control=conventional2" in out
-    assert cli.main(["profile", "show", "lifepo4-24v", "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)["values"] == {"absorption_voltage": 28.4, "float_voltage": 27.0}
-    assert cli.main(["profile", "show", "nope"]) == 2 and "no premade profile" in capsys.readouterr().err
+    assert "product 0xA053, firmware from 0x163, 12 V system" in out and "float_voltage" in out and "conventional1" in out
+    assert "not supported and not imported" in out
+    assert cli.main(["profile", "show", str(DATA), "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["product_id"] == 0xA053 and data["values"]["absorption_voltage"] == 14.5 and data["system_voltage"] == 12
+    assert cli.main(["profile", "show", str(tmp_path / "missing.vcsf")]) == 2 and "cannot read" in capsys.readouterr().err
+    (tmp_path / "bad.vcsf").write_bytes(b"not a settings file")
+    assert cli.main(["profile", "show", str(tmp_path / "bad.vcsf")]) == 2 and "VCCF" in capsys.readouterr().err
 
 
-def test_profile_save(capsys, tmp_path):
-    out = tmp_path / "p.yml"
-    with StubDaemon({"settings": SETTINGS}) as d:
-        assert run_cli(d, "profile", "save", str(out), "--description", "mine") == 0
-        text = out.read_text()
-        assert "# from device AA" in text and "float_voltage: 13.5" in text and "description: mine" in text
-        assert run_cli(d, "profile", "save", str(out)) == 2 and "--force" in capsys.readouterr().err
-        assert run_cli(d, "profile", "save", "-") == 0 and "values:" in capsys.readouterr().out.split("saved", 1)[-1]
-
-
-def test_profile_diff_dry_run_and_nothing_to_change(capsys, tmp_path):
-    path = write_profile(tmp_path / "p.yml", float_voltage=13.8, absorption_voltage=14.5)
-    with StubDaemon({"settings": SETTINGS, "write": {"written": []}}) as d:
-        assert run_cli(d, "profile", "diff", path) == 0
+def test_profile_diff_and_dry_run_write_nothing(capsys):
+    with StubDaemon({"settings": settings(float_voltage=13.8, load_output_control="on"), "write": {"written": []}}) as d:
+        assert run_cli(d, "profile", "diff", str(DATA)) == 0
         out = capsys.readouterr().out
-        assert "1 of 2 value(s) differ" in out and "13.5  ->  13.8" in out and "absorption_voltage" not in out
-        assert run_cli(d, "profile", "load", path, "--dry-run") == 0
-        same = write_profile(tmp_path / "s.yml", float_voltage=13.5)
-        assert run_cli(d, "profile", "load", same, "--yes") == 0 and "nothing to change" in capsys.readouterr().out
-        assert [c[0] for c in d.calls] == ["settings", "settings", "settings"]
+        import re
+
+        assert "2 of 22 value(s) differ" in out
+        assert re.search(r"float_voltage\s+13\.8\s+->\s+13\.5", out) and re.search(r"load_output_control\s+on\s+->\s+conventional1", out)
+        assert run_cli(d, "profile", "load", str(DATA), "--dry-run") == 0
+        assert [c[0] for c in d.calls] == ["settings", "settings"]
 
 
-def test_profile_load_writes_only_the_differences_and_verifies(capsys, tmp_path):
-    path = write_profile(tmp_path / "p.yml", float_voltage=13.8, absorption_voltage=14.5)
-    ok = {"written": [{"name": "float_voltage", "requested": 13.8, "old": 13.5, "value": 13.8, "ok": True}]}
-    with StubDaemon({"settings": SETTINGS, "write": ok}) as d:
-        assert run_cli(d, "profile", "load", path, "--yes") == 0
-        assert d.calls[-1] == ("write", {"values": {"float_voltage": 13.8}})
-        assert "written and verified: 1 value(s)" in capsys.readouterr().out
+def test_profile_with_nothing_to_change(capsys):
+    with StubDaemon({"settings": settings()}) as d:
+        assert run_cli(d, "profile", "load", str(DATA), "--yes") == 0
+        assert "nothing to change" in capsys.readouterr().out and [c[0] for c in d.calls] == ["settings"]
 
 
-def test_profile_load_reports_a_mismatch(capsys, tmp_path):
-    path = write_profile(tmp_path / "p.yml", float_voltage=13.8)
-    bad = {"written": [{"name": "float_voltage", "requested": 13.8, "old": 13.5, "value": 13.5, "ok": False}]}
-    with StubDaemon({"settings": SETTINGS, "write": bad}) as d:
-        assert run_cli(d, "profile", "load", path, "--yes") == 1
-    assert "float_voltage (wanted 13.8, got 13.5)" in capsys.readouterr().err
+def test_profile_load_writes_only_the_differences_in_order_and_verifies(capsys):
+    ok = {"written": [{"name": "battery_type", "requested": "user", "old": "preset1", "value": "user", "ok": True}]}
+    with StubDaemon({"settings": settings(battery_type="preset1", float_voltage=13.8, tail_current=0.5), "write": ok}) as d:
+        assert run_cli(d, "profile", "load", str(DATA), "--yes") == 0
+        values = d.calls[-1][1]["values"]
+        assert list(values) == ["battery_type", "float_voltage", "tail_current"]  # the battery type first
+        assert values == {"battery_type": "user", "float_voltage": 13.5, "tail_current": 0.0}
+        assert "written and verified: 3 value(s)" in capsys.readouterr().out
 
 
-def test_profile_load_asks_for_confirmation(capsys, tmp_path, monkeypatch):
-    path = write_profile(tmp_path / "p.yml", float_voltage=13.8)
-    ok = {"written": [{"name": "float_voltage", "requested": 13.8, "old": 13.5, "value": 13.8, "ok": True}]}
-    with StubDaemon({"settings": SETTINGS, "write": ok}) as d:
+def test_profile_load_reports_a_mismatch(capsys):
+    bad = {"written": [{"name": "float_voltage", "requested": 13.5, "old": 13.8, "value": 13.8, "ok": False}]}
+    with StubDaemon({"settings": settings(float_voltage=13.8), "write": bad}) as d:
+        assert run_cli(d, "profile", "load", str(DATA), "--yes") == 1
+    assert "float_voltage (wanted 13.5, got 13.8)" in capsys.readouterr().err
+
+
+def test_profile_load_asks_for_confirmation(capsys, monkeypatch):
+    ok = {"written": [{"name": "float_voltage", "requested": 13.5, "old": 13.8, "value": 13.5, "ok": True}]}
+    with StubDaemon({"settings": settings(float_voltage=13.8), "write": ok}) as d:
         monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda self: False})())
-        assert run_cli(d, "profile", "load", path) == 2
+        assert run_cli(d, "profile", "load", str(DATA)) == 2
         monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda self: True})())
         monkeypatch.setattr("builtins.input", lambda prompt: "n")
-        assert run_cli(d, "profile", "load", path) == 1 and "write" not in [c[0] for c in d.calls]
+        assert run_cli(d, "profile", "load", str(DATA)) == 1 and "write" not in [c[0] for c in d.calls]
         monkeypatch.setattr("builtins.input", lambda prompt: "y")
-        assert run_cli(d, "profile", "load", path) == 0
-    assert "float_voltage = 13.8 V" in capsys.readouterr().out
+        assert run_cli(d, "profile", "load", str(DATA)) == 0
+    assert "float_voltage = 13.5 V" in capsys.readouterr().out
 
 
-def test_profile_files_are_validated_before_contacting_the_daemon(capsys, tmp_path):
-    with StubDaemon({"settings": SETTINGS}) as d:
-        assert run_cli(d, "profile", "load", write_profile(tmp_path / "a.yml", device_mode="off"), "--yes") == 2
-        assert run_cli(d, "profile", "load", write_profile(tmp_path / "b.yml", float_voltage=99), "--yes") == 2
-        assert d.calls == []
-    assert "not a profile setting" in capsys.readouterr().err
+def test_profile_for_another_device_is_refused_before_anything_is_written(capsys, tmp_path):
+    other_product = {**settings(float_voltage=13.8), "product_id": 0xA042}
+    old_firmware = {**settings(float_voltage=13.8), "firmware": 0x150}
+    other_system = {**settings(float_voltage=13.8), "system_voltage": 24}
+    for live, message in ((other_product, "is for product 0xA053, the device is 0xA042"), (old_firmware, "needs firmware 0x163 or newer"), (other_system, "a 12 V system, the device runs at 24 V")):
+        with StubDaemon({"settings": live, "write": {"written": []}}) as d:
+            assert run_cli(d, "profile", "load", str(DATA), "--yes") == 2
+            assert message in capsys.readouterr().err and "write" not in [c[0] for c in d.calls]
+
+
+def test_a_preset_battery_type_leaves_out_the_charge_voltages(capsys, tmp_path):
+    path = tmp_path / "preset.vcsf"
+    values = {"battery_type": "preset1", "absorption_voltage": 14.3, "float_voltage": 13.8, "tail_current": 0.5}
+    path.write_bytes(profiles.dump_profile(values, product_id=0xA053, firmware=0x164, system_voltage=12))
+    with StubDaemon({"settings": settings(), "write": {"written": []}}) as d:
+        assert run_cli(d, "profile", "diff", str(path)) == 0
+        out = capsys.readouterr().out
+        assert "note: the battery type is the preset preset1" in out and "absorption_voltage, float_voltage" in out
+        assert "battery_type" in out and "tail_current" in out and "13.8" not in out.split("note:")[1].split("\n", 1)[1]
+
+
+def test_profile_save_writes_a_settings_file_that_can_be_read_back(capsys, tmp_path):
+    out = tmp_path / "saved.vcsf"
+    with StubDaemon({"settings": settings(float_voltage=13.7)}) as d:
+        assert run_cli(d, "profile", "save", str(out), "--description", "mine") == 0
+        assert "not yet checked with VictronConnect" in capsys.readouterr().out
+        assert run_cli(d, "profile", "save", str(out)) == 2 and "--force" in capsys.readouterr().err
+        assert run_cli(d, "profile", "save", str(out), "--force") == 0
+    p = profiles.load_profile(out)
+    assert p.values["float_voltage"] == 13.7 and p.values["load_output_control"] == "conventional1" and p.product_id == 0xA053 and p.system_voltage == 12
+    assert p.description == "" and p.min_firmware == 0x164

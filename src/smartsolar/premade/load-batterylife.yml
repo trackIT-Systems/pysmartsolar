@@ -1,4 +1,0 @@
-name: load-batterylife
-description: 'Load output: BatteryLife, self-adapting to maximise the battery lifetime (the default)'
-values:
-  load_output_control: batterylife

@@ -1,5 +1,0 @@
-name: lifepo4-24v
-description: Lithium iron phosphate (LiFePO4) (position 7), 24 V system
-values:
-  absorption_voltage: 28.4
-  float_voltage: 27.0

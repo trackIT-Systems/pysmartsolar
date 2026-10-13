@@ -364,7 +364,7 @@ def test_write_command_errors():
     run(go())
 
 
-def test_settings_command_reads_the_writable_values_live():
+def test_settings_command_reads_the_settings_and_what_a_profile_is_checked_against():
     async def go():
         async with Env() as env:
             with pytest.raises(DaemonError) as err:
@@ -372,8 +372,11 @@ def test_settings_command_reads_the_writable_values_live():
             assert err.value.type == "no_data"
             await env.select()
             result = await env.call("settings")
-            assert {v["name"]: v["value"] for v in result["values"]} == {"float_voltage": 13.5, "absorption_voltage": 14.5, "battery_max_current": 15.0, "load_output_control": "conventional1"}
-            assert all(v["unit"] for v in result["values"] if v["name"] != "load_output_control")
+            values = {v["name"]: v["value"] for v in result["values"]}
+            assert values["float_voltage"] == 13.5 and values["load_output_control"] == "conventional1" and values["low_temperature_current"] is None
+            assert values["rebulk_voltage_offset"] == 0.1 and values["load_user_high_voltage"] == 14.0 and values["battery_type"] == "user"
+            assert result["product_id"] == 0xA053 and result["system_voltage"] == 12 and result["voltage_range"] == [8.0, 17.4]
+            assert "device_mode" not in values
             with pytest.raises(DaemonError) as err:
                 await env.call("settings", names=["battery_voltage"])
             assert err.value.type == "bad_request"
@@ -381,8 +384,41 @@ def test_settings_command_reads_the_writable_values_live():
     run(go())
 
 
-def test_profile_save_load_and_restore_through_the_cli(tmp_path, capsys):
-    from smartsolar import cli
+def test_a_voltage_outside_the_devices_range_is_refused_before_it_is_written():
+    async def go():
+        async with Env() as env:
+            await env.select()
+            for name, value in (("float_voltage", 30.0), ("absorption_voltage", 17.5), ("temperature_compensation", 25.0)):
+                with pytest.raises(DaemonError) as err:
+                    await env.call("write", values={name: value})
+                assert err.value.type == "invalid_write" and "error 119" in err.value.message, name
+            with pytest.raises(DaemonError) as err:
+                await env.call("write", values={"absorption_voltage": 7.9})  # below the lowest value of any system: refused offline
+            assert err.value.type == "invalid_write" and "outside 8..70" in err.value.message
+            assert env.backend.set_log == []
+            await env.call("write", values={"equalisation_voltage": 0})  # 0 means not used
+            await env.call("write", values={"float_voltage": 17.4})  # the edge of the range
+
+    run(go())
+
+
+def test_charge_settings_need_the_user_battery_type():
+    async def go():
+        async with Env() as env:
+            env.backend.registers[0xEDF1] = b"\x01"
+            await env.select()
+            with pytest.raises(DaemonError) as err:
+                await env.call("write", values={"float_voltage": 13.6})
+            assert err.value.type == "write_failed" and "battery_type=user" in err.value.message
+            assert env.backend.set_log == []
+            result = await env.call("write", values={"battery_type": "user", "float_voltage": 13.6})  # in this order the device takes it
+            assert [w["ok"] for w in result["written"]] == [True, True]
+
+    run(go())
+
+
+def test_profile_load_through_the_cli_changes_the_device_and_restores_it(tmp_path, capsys):
+    from smartsolar import cli, profiles
 
     async def go():
         async with Env() as env:
@@ -391,27 +427,35 @@ def test_profile_save_load_and_restore_through_the_cli(tmp_path, capsys):
             def cli_run(*argv):
                 return asyncio.to_thread(cli.main, ["--socket", str(env.sock), "profile", *argv])
 
-            before = tmp_path / "before.yml"
-            assert await cli_run("save", str(before)) == 0
-            assert await cli_run("diff", "lifepo4-12v") == 0
-            assert "1 of 2 value(s) differ" in capsys.readouterr().out  # float 13.5 is the same already
-            assert env.backend.set_log == []  # diff and save write nothing
-            assert await cli_run("load", "lifepo4-12v", "--dry-run") == 0 and env.backend.set_log == []
+            original = tmp_path / "original.vcsf"
+            assert await cli_run("save", str(original)) == 0
+            changed = tmp_path / "changed.vcsf"
+            live = profiles.load_profile(original).values | {"float_voltage": 13.8, "tail_current": 0.5, "load_output_control": "conventional2", "adaptive_mode": "on", "low_temperature_current": 5.0}
+            changed.write_bytes(profiles.dump_profile(live, product_id=0xA053, firmware=0x164, system_voltage=12))
 
-            assert await cli_run("load", "lifepo4-12v", "--yes") == 0
-            assert env.backend.registers[0xEDF7] == (1420).to_bytes(2, "little") and env.backend.registers[0xEDF6] == (1350).to_bytes(2, "little")
-            assert [v for v, _ in env.backend.set_log] == [0xEDF7]  # float was 13.5 already: only what differs is written
-            assert await cli_run("diff", "lifepo4-12v") == 0
+            assert await cli_run("diff", str(changed)) == 0 and env.backend.set_log == []
+            capsys.readouterr()
+            assert await cli_run("load", str(changed), "--yes") == 0
+            assert [v for v, _ in env.backend.set_log] == [0xEDF6, 0xEDFE, 0xEDE7, 0xEDE6, 0xEDAB]  # the order of the settings table
+            assert env.backend.registers[0xEDF6] == bytes.fromhex("6405") and env.backend.registers[0xEDAB] == b"\x03"
+            assert env.backend.registers[0xEDE6] == bytes.fromhex("3200")  # 5.0 A in 0.1 A
+            assert await cli_run("diff", str(changed)) == 0
             assert "nothing to change" in capsys.readouterr().out.rsplit("written and verified", 1)[-1]
 
-            assert await cli_run("load", str(before), "--yes") == 0  # restore
-            assert env.backend.registers[0xEDF7] == bytes.fromhex("aa05")
+            assert await cli_run("load", str(original), "--yes") == 0  # restore
+            assert env.backend.registers[0xEDF6] == bytes.fromhex("4605") and env.backend.registers[0xEDE6] == b"\xff\xff" and env.backend.registers[0xEDAB] == b"\x02"
 
-            # a load profile changes only the load output algorithm
-            assert env.backend.registers[0xEDAB] == b"\x02"
-            assert await cli_run("load", "load-conventional2", "--yes") == 0
-            assert env.backend.registers[0xEDAB] == b"\x03" and env.backend.registers[0xEDF6] == bytes.fromhex("4605")
-            assert await cli_run("load", str(before), "--yes") == 0
-            assert env.backend.registers[0xEDAB] == b"\x02"  # the saved file restores the load mode too
+    run(go())
+
+
+def test_the_sample_profile_loads_on_the_fake_device_without_changes(capsys):
+    from smartsolar import cli
+
+    async def go():
+        async with Env() as env:
+            await env.select()
+            sample = str(Path(__file__).parent / "data" / "ve-mppt-75-15-lifepo4.vcsf")
+            assert await asyncio.to_thread(cli.main, ["--socket", str(env.sock), "profile", "diff", sample]) == 0
+            assert "nothing to change" in capsys.readouterr().out and env.backend.set_log == []
 
     run(go())

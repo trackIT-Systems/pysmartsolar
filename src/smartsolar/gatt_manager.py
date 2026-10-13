@@ -25,11 +25,23 @@ from typing import Any
 
 from smartsolar.ble import Advertisement, BleBackend, GattLink
 from smartsolar.config import GattConfig
-from smartsolar.errors import ConnectError, NoDataError, NotConnectedError, SmartsolarError, WriteFailed
+from smartsolar.errors import ConnectError, NoDataError, NotConnectedError, ProtocolError, SmartsolarError, WriteFailed
 from smartsolar.gatt_session import GattSession
 from smartsolar.reading import Event, Reading
 from smartsolar.state import GattStats
-from smartsolar.vreg import POLLED_VREGS, VREG_KEY, VREGS, WriteItem, decode_vreg
+from smartsolar.vreg import (
+    POLLED_VREGS,
+    VREG_BATTERY_TYPE,
+    VREG_BATTERY_VOLTAGE_ACTUAL,
+    VREG_KEY,
+    VREG_VOLTAGE_RANGE_MAX,
+    VREG_VOLTAGE_RANGE_MIN,
+    VREGS,
+    WRITABLE,
+    WriteItem,
+    check_voltage_limits,
+    decode_vreg,
+)
 
 log = logging.getLogger(__name__)
 
@@ -382,7 +394,14 @@ class GattManager:
             try:
                 values = {}
                 for vreg in vregs:
-                    values[vreg] = await self._until_stop(session.request(vreg, self.cfg.request_timeout_s))
+                    try:
+                        values[vreg] = await self._until_stop(session.request(vreg, self.cfg.request_timeout_s))
+                    except (NotConnectedError, _Stopping):
+                        raise
+                    except ProtocolError as exc:
+                        log.debug("read of 0x%04x: %s", vreg, exc)  # not available on this model or firmware
+                if not values:
+                    raise NoDataError("the device answered none of the registers")
                 future.set_result(values)
             except _Stopping:
                 if not future.done():
@@ -396,6 +415,31 @@ class GattManager:
                 if not future.done():
                     future.set_exception(exc)
 
+    async def _check_write(self, session: GattSession, item: WriteItem) -> None:
+        """Refuse what the device would turn into error 119, or silently ignore (a charge voltage with a preset battery type)."""
+        writable = WRITABLE[item.name]
+        if not (writable.needs_user_type or writable.check):
+            return
+        timeout = self.cfg.request_timeout_s
+        if writable.needs_user_type:
+            battery_type = await self._until_stop(session.request(VREG_BATTERY_TYPE, timeout))
+            if bytes(battery_type)[:1] != b"\xff":
+                raise WriteFailed(f"{item.name}: the battery type is a preset ({bytes(battery_type)[0]}), the device only takes this setting with battery_type=user")
+        if writable.check:
+            system = 12
+            try:
+                system = bytes(await self._until_stop(session.request(VREG_BATTERY_VOLTAGE_ACTUAL, timeout)))[0] or 12
+            except ProtocolError:
+                pass
+            vrange = None
+            try:
+                low = await self._until_stop(session.request(VREG_VOLTAGE_RANGE_MIN, timeout))
+                high = await self._until_stop(session.request(VREG_VOLTAGE_RANGE_MAX, timeout))
+                vrange = (int.from_bytes(low, "little") * 0.01, int.from_bytes(high, "little") * 0.01)
+            except ProtocolError:
+                pass  # an older firmware does not report it: the 12 V limits scaled by the system voltage
+            check_voltage_limits(item, writable, system_voltage=system, vrange=vrange)
+
     async def _do_writes(self, adv: Advertisement, session: GattSession) -> None:
         """Run the queued writes: note the old value, write, check the echo, read the register back."""
         while self._write_requests:
@@ -403,6 +447,7 @@ class GattManager:
             results: list[dict[str, Any]] = []
             try:
                 for item in items:
+                    await self._check_write(session, item)
                     old_raw = session.values.get(item.vreg)
                     if old_raw is None:
                         try:

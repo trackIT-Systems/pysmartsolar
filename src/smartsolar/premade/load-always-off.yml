@@ -1,4 +1,0 @@
-name: load-always-off
-description: 'Load output: always off'
-values:
-  load_output_control: 'off'

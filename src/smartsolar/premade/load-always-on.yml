@@ -1,4 +1,0 @@
-name: load-always-on
-description: 'Load output: always on'
-values:
-  load_output_control: 'on'

@@ -382,11 +382,13 @@ def test_request_read_connects_on_demand_and_returns_raw_values():
     run(go())
 
 
-def test_request_read_of_an_unavailable_register_fails_the_request_only():
+def test_request_read_skips_registers_the_device_does_not_have():
     async def go():
         async with Rig("hold") as rig:
             await until(lambda: rig.mgr.state is GattState.CONNECTED)
-            with pytest.raises(Exception, match="not available"):
+            values = await asyncio.wait_for(rig.mgr.request_read([0xBEEF, 0xEDF6]), 3.0)
+            assert values == {0xEDF6: bytes.fromhex("4605")}
+            with pytest.raises(Exception, match="none of the registers"):
                 await asyncio.wait_for(rig.mgr.request_read([0xBEEF]), 3.0)
             assert rig.mgr.state is GattState.CONNECTED
 

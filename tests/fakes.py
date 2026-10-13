@@ -67,12 +67,19 @@ def default_registers() -> dict[int, bytes]:
             0xEDD3: bytes(4), 0xEDD2: bytes(4), 0xEDD1: bytes(4), 0xEDD0: bytes(4), 0xEDDC: (9847).to_bytes(4, "little"),
             0xEDDB: bytes.fromhex("400b"), 0xEDBB: bytes.fromhex("0300"), 0xEDBC: bytes(4), 0xEDAB: b"\x02", 0xEDAD: bytes(2),
             0xEDF0: bytes.fromhex("9600"), 0xEDF1: b"\xff", 0xEDF6: bytes.fromhex("4605"), 0xEDF7: bytes.fromhex("aa05"), 0xEDEF: b"\x0c",
+            # the rest of the settings of the SmartSolar 75/15 used for the tests (a LiFePO4 profile)
+            0xEDF4: bytes(2), 0xEDF2: bytes(2), 0xEDFB: bytes.fromhex("c800"), 0xEDFE: b"\x00", 0xEDFD: b"\x00", 0xEDE4: b"\x00",
+            0xEDE3: bytes.fromhex("c800"), 0xEDE5: b"\x00", 0xED2E: bytes.fromhex("0a00"), 0xEDE7: bytes(2), 0xEDE0: bytes.fromhex("f401"),
+            0xEDE6: b"\xff\xff", 0xED9D: bytes.fromhex("7805"), 0xED9C: bytes.fromhex("e803"), 0xED90: bytes.fromhex("1e00"),
+            0xED98: b"\x01", 0xED9E: b"\x00", 0x0100: bytes.fromhex("0053a0fe"), 0x2211: bytes.fromhex("2003"), 0x2212: bytes.fromhex("cc06"),
         }
     )
     return registers
 
 
-WRITABLE_REGISTERS = {0x0200, 0xEDAB, 0xEDF6, 0xEDF7, 0xEDF0}
+from smartsolar.vreg import WRITABLE  # noqa: E402
+
+WRITABLE_REGISTERS = {w.vreg for w in WRITABLE.values()}
 
 
 class FakeLink:

@@ -259,25 +259,20 @@ VREGS: dict[int, Vreg] = {
         Vreg(0xED8F, "channel_1_current", "Channel 1 current", "A", _signed(0.1), verified=False),
         Vreg(0xEDA8, "load_output_status", "Load output status", "", _unsigned()),
         Vreg(0xEDA9, "load_output_voltage", "Load output voltage", "V", _unsigned(0.01)),
-        Vreg(0xEDAB, "load_output_control", "Load output control", "", _enum(LOAD_CONTROLS)),
         Vreg(0xEDAC, "load_output_offset_voltage", "Load output offset voltage", "V", _unsigned(0.01)),
         Vreg(0xEDAD, "load_output_current", "Load output current", "A", _unsigned(0.1), verified=False),
         Vreg(0xEDEC, "battery_temperature", "Battery temperature", "°C", _kelvin_to_celsius),
         Vreg(0x2211, "adjustable_voltage_min", "Adjustable voltage minimum", "V", _unsigned(0.01)),
         Vreg(0x2212, "adjustable_voltage_max", "Adjustable voltage maximum", "V", _unsigned(0.01)),
-        Vreg(0xEDF0, "battery_max_current", "Battery maximum current", "A", _unsigned(0.1)),
-        Vreg(0xEDF1, "battery_type", "Battery type", "", _unsigned(), verified=False),
-        Vreg(0xEDF6, "float_voltage", "Float voltage", "V", _unsigned(0.01)),
-        Vreg(0xEDF7, "absorption_voltage", "Absorption voltage", "V", _unsigned(0.01), verified=False),
         Vreg(0xEDEF, "battery_voltage_setting", "Battery voltage setting", "V", _unsigned(), verified=False),
     )
 }
 
 # Registers that are read (ctx 3) at every poll and every hold publish. The device pushes a few
 # others by itself (uptime, channel 1 voltage, load output, ...).
-POLLED_VREGS: tuple[int, ...] = (
+_POLLED_BASE: tuple[int, ...] = (
     0x0200, 0x0201, 0xEDDA, 0xEDD5, 0xEDD7, 0xEDD3, 0xEDD2, 0xEDD1, 0xEDD0, 0xEDDC, 0xEDDB,
-    0xEDBB, 0xEDBC, 0xEDAB, 0xEDAD, 0xEDF0, 0xEDF1, 0xEDF6, 0xEDF7, 0xEDEF,
+    0xEDBB, 0xEDBC, 0xEDAD, 0xEDEF,
 )
 
 # Never turned into a Value: it is a secret.
@@ -298,6 +293,13 @@ def decode_vreg(vreg: int, raw: Any) -> Value | None:
         return None
 
 
+def _register_settings() -> None:
+    """The writable registers are also readable values: decode them with the same codec."""
+    for w in WRITABLE.values():
+        if w.vreg not in VREGS:
+            VREGS[w.vreg] = Vreg(w.vreg, w.name, w.friendly, w.unit, w.decode, verified=w.verified)
+
+
 def vreg_table() -> list[dict[str, Any]]:
     return [
         {"id": f"0x{v.id:04x}", "name": v.name, "friendly": v.friendly, "unit": v.unit, "verified": v.verified}
@@ -305,12 +307,18 @@ def vreg_table() -> list[dict[str, Any]]:
     ]
 
 
-# -- writing ------------------------------------------------------------------------------------
+# -- settings: registers that can be read, written and imported from a VictronConnect file ------
 
 
 @dataclass(frozen=True)
 class Writable:
-    """A register that ``smartsolar write`` may change. Everything else is refused."""
+    """A setting register that ``smartsolar write`` and ``profile load`` may change.
+
+    Everything else is refused. Register ids, widths and scales follow Victron's "VE.Direct
+    protocol, BlueSolar and SmartSolar MPPT chargers" (rev 18); the ones with ``vcsf`` set were
+    checked against a SmartSolar 75/15 by reading them and comparing with a VictronConnect
+    settings file of the same configuration.
+    """
 
     name: str
     vreg: int
@@ -322,6 +330,18 @@ class Writable:
     scale: float = 1.0  # raw = value / scale
     minimum: float = 0.0
     maximum: float = 0.0
+    signed: bool = False
+    na_raw: int | None = None  # a raw value that means "not set / use the maximum"
+    vcsf: str | None = None  # the key in a VictronConnect settings file
+    check: str | None = None  # "voltage" or "tempcomp": validated against the device before writing
+    zero_ok: bool = False  # 0 is allowed although it is outside the range (the feature is off)
+    needs_user_type: bool = False  # the device only takes it if the battery type is user defined (255)
+    mask: int | None = None  # bits of the raw value that belong to this setting
+    verified: bool = True  # the scale and meaning were seen on a device (zero values do not count)
+
+    @property
+    def friendly(self) -> str:
+        return self.name.replace("_", " ").capitalize()
 
     def encode(self, value: Any) -> tuple[bytes, Any]:
         """The bytes to send and the value as it will be read back."""
@@ -331,33 +351,158 @@ class Writable:
             if key not in self.values:
                 raise InvalidWriteError(f"{self.name}: {value!r} is not one of {', '.join(self.values)}")
             return self.values[key].to_bytes(self.width, "little"), key
+        if value is None or str(value).strip().lower() in ("none", "max", "n/a"):
+            if self.na_raw is None:
+                raise InvalidWriteError(f"{self.name}: needs a number")
+            return self.na_raw.to_bytes(self.width, "little"), None
         try:
             number = float(value)
         except (TypeError, ValueError):
             raise InvalidWriteError(f"{self.name}: {value!r} is not a number") from None
-        if not self.minimum <= number <= self.maximum:
+        if not (self.zero_ok and number == 0) and not self.minimum <= number <= self.maximum:
             raise InvalidWriteError(f"{self.name}: {number:g} is outside {self.minimum:g}..{self.maximum:g} {self.unit}".rstrip())
         raw = round(number / self.scale)
-        return raw.to_bytes(self.width, "little"), round(raw * self.scale, 2)
+        try:
+            data = raw.to_bytes(self.width, "little", signed=self.signed)
+        except OverflowError:
+            raise InvalidWriteError(f"{self.name}: {number:g} does not fit the register") from None
+        return data, self._shown(raw)
 
+    def _shown(self, raw: int) -> Any:
+        return raw if self.scale == 1.0 else round(raw * self.scale, 2)
+
+    def decode(self, raw: Any) -> Any:
+        number = int.from_bytes(_bytes(raw), "little", signed=self.signed)
+        if self.mask is not None:
+            number &= self.mask
+        if self.values is not None:
+            for name, value in self.values.items():
+                if value == number:
+                    return name
+            return f"unknown ({number})"
+        if self.na_raw is not None and number == self.na_raw:
+            return None
+        return self._shown(number)
+
+    def from_vcsf(self, value: Any) -> Any:
+        """The value of a VictronConnect settings file entry, in the units of ``write``."""
+        if self.values is not None:
+            for name, number in self.values.items():
+                if isinstance(value, (int, float)) and not isinstance(value, bool) and number == int(value):
+                    return name
+            if isinstance(value, bool):
+                for name, number in self.values.items():
+                    if number == int(value):
+                        return name
+            raise InvalidWriteError(f"{self.name}: {value!r} is not a known value")
+        if self.na_raw is not None and isinstance(value, (int, float)) and value == self.na_raw:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise InvalidWriteError(f"{self.name}: {value!r} is not a number")
+        return float(value) if self.scale != 1.0 else int(value)
+
+    def to_vcsf(self, value: Any) -> Any:
+        if self.values is not None:
+            return self.values[value]
+        if value is None:
+            return self.na_raw
+        return value
+
+
+def _enum_values(names: dict[int, str]) -> dict[str, int]:
+    return {name: number for number, name in names.items()}
+
+
+BATTERY_TYPES = {255: "user", **{n: f"preset{n}" for n in range(1, 9)}}
+RX_PORT_FUNCTIONS = {0: "remote-on-off", 1: "load-config", 2: "load-on-off-inverted", 3: "load-on-off-normal"}
+TX_PORT_FUNCTIONS = {0: "communication", 1: "pulse-0.01kwh", 2: "pwm-normal", 3: "pwm-inverted", 4: "virtual-load"}
+OFF_ON = {0: "off", 1: "on"}
 
 WRITABLE: dict[str, Writable] = {
     w.name: w
     for w in (
         Writable("device_mode", 0x0200, "Charger on or off", 1, values={"on": 1, "off": 4}),
+        # battery: the type first, because the device only takes the charge settings when it is "user"
+        Writable("battery_type", 0xEDF1, "Battery type: user (own settings) or a factory preset", 1, values=_enum_values(BATTERY_TYPES), vcsf="/Settings/BatteryType"),
+        Writable("battery_max_current", 0xEDF0, "Battery maximum charge current", 2, "A", scale=0.1, minimum=0.0, maximum=100.0, vcsf="/Settings/ChargeCurrentLimit"),
+        Writable("absorption_voltage", 0xEDF7, "Absorption voltage", 2, "V", scale=0.01, minimum=8.0, maximum=70.0, vcsf="/Settings/AbsorptionVoltage", check="voltage", needs_user_type=True),
+        Writable("float_voltage", 0xEDF6, "Float voltage", 2, "V", scale=0.01, minimum=8.0, maximum=70.0, vcsf="/Settings/FloatVoltage", check="voltage", needs_user_type=True),
+        Writable("equalisation_voltage", 0xEDF4, "Equalisation voltage (0: not used)", 2, "V", scale=0.01, minimum=8.0, maximum=70.0, zero_ok=True, vcsf="/Settings/EqualizeVoltage", check="voltage", needs_user_type=True),
+        Writable("temperature_compensation", 0xEDF2, "Temperature compensation", 2, "mV/K", scale=0.01, minimum=-42.0, maximum=42.0, signed=True, vcsf="/Settings/TemperatureCompensation", check="tempcomp", needs_user_type=True, verified=False),
+        Writable("absorption_time_limit", 0xEDFB, "Maximum absorption time", 2, "h", scale=0.01, minimum=0.0, maximum=12.98, vcsf="/Settings/AbsorptionMaxTime"),
+        Writable("adaptive_mode", 0xEDFE, "Adaptive absorption time", 1, values=_enum_values(OFF_ON), vcsf="/Settings/AdaptiveMode"),
+        Writable("auto_equalise_days", 0xEDFD, "Automatic equalisation every N days (0: off)", 1, "days", minimum=0, maximum=250, vcsf="/Settings/AutoEqualize"),
+        Writable("equalisation_current_percent", 0xEDE4, "Equalisation current, percent of the maximum current", 1, "%", minimum=0, maximum=100, vcsf="/Settings/EqualisationCurrentPercentage"),
+        Writable("equalisation_duration", 0xEDE3, "Maximum equalisation duration", 2, "h", scale=0.01, minimum=0.0, maximum=12.98, vcsf="/Settings/EqualisationDuration"),
+        Writable("equalisation_auto_stop", 0xEDE5, "Stop equalisation when the voltage is reached", 1, values=_enum_values(OFF_ON), vcsf="/Settings/EqualisationAutoStop"),
+        Writable("rebulk_voltage_offset", 0xED2E, "Re-bulk voltage offset", 2, "V", scale=0.01, minimum=0.0, maximum=5.0, vcsf="/Settings/RebulkVoltageOffset"),
+        Writable("tail_current", 0xEDE7, "Tail current that ends absorption (0: off)", 2, "A", scale=0.1, minimum=0.0, maximum=100.0, vcsf="/Settings/TailCurrent"),
+        Writable("low_temperature_level", 0xEDE0, "Low temperature cut-off", 2, "°C", scale=0.01, minimum=-40.0, maximum=50.0, signed=True, vcsf="/Settings/LowBatteryTempLevel"),
+        Writable("low_temperature_current", 0xEDE6, "Charge current below the low temperature level (none: the maximum)", 2, "A", scale=0.1, minimum=0.0, maximum=100.0, na_raw=0xFFFF, vcsf="/Settings/LowBatteryTempCurrent"),
+        # load output
         Writable(
             "load_output_control",
             0xEDAB,
             "Load output algorithm: off, batterylife, conventional1 (off < 11.1 V, on > 13.1 V), conventional2 (11.8 / 14.0 V), on, user1, user2, aes (voltages for 12 V)",
             1,
-            values={v: k for k, v in LOAD_CONTROLS.items()},
+            values=_enum_values(LOAD_CONTROLS),
             aliases=LOAD_CONTROL_ALIASES,
+            mask=0x0F,
+            vcsf="/Settings/Load/OperationMode",
         ),
-        Writable("float_voltage", 0xEDF6, "Float charge voltage", 2, "V", scale=0.01, minimum=5.0, maximum=70.0),
-        Writable("absorption_voltage", 0xEDF7, "Absorption charge voltage", 2, "V", scale=0.01, minimum=5.0, maximum=70.0),
-        Writable("battery_max_current", 0xEDF0, "Battery maximum charge current", 2, "A", scale=0.1, minimum=0.0, maximum=100.0),
+        Writable("load_user_high_voltage", 0xED9D, "Load output switch-on voltage of the user and AES algorithms", 2, "V", scale=0.01, minimum=0.0, maximum=70.0, vcsf="/Settings/Load/UserHighVoltage"),
+        Writable("load_user_low_voltage", 0xED9C, "Load output switch-off voltage of the user and AES algorithms", 2, "V", scale=0.01, minimum=0.0, maximum=70.0, vcsf="/Settings/Load/UserLowVoltage"),
+        Writable("load_aes_timer", 0xED90, "AES timer", 2, "min", minimum=0, maximum=65535, vcsf="/Settings/Load/AesTimer"),
+        # VE.Direct ports
+        Writable("rx_port_function", 0xED98, "VE.Direct RX port function", 1, values=_enum_values(RX_PORT_FUNCTIONS), vcsf="/Settings/RxPortFunction"),
+        Writable("tx_port_function", 0xED9E, "VE.Direct TX port function", 1, values=_enum_values(TX_PORT_FUNCTIONS), vcsf="/Settings/TxPortFunction"),
     )
 }
+
+# Read next to the settings: what a profile is checked against.
+VREG_PRODUCT_ID = 0x0100
+VREG_FIRMWARE = 0x0102
+VREG_BATTERY_VOLTAGE_ACTUAL = 0xEDEF
+VREG_VOLTAGE_RANGE_MIN = 0x2211
+VREG_VOLTAGE_RANGE_MAX = 0x2212
+VREG_BATTERY_TYPE = 0xEDF1
+TEMPERATURE_COMPENSATION_LIMIT_12V = 21.0  # mV/K; the device raises error 119 beyond this
+VOLTAGE_RANGE_12V = (8.0, 17.4)  # V; the same, and the fallback if the device does not report a range
+PROFILE_CONTEXT_VREGS = (VREG_PRODUCT_ID, VREG_FIRMWARE, VREG_BATTERY_VOLTAGE_ACTUAL, VREG_VOLTAGE_RANGE_MIN, VREG_VOLTAGE_RANGE_MAX)
+
+
+def product_id(raw: Any) -> int | None:
+    """The product id of register 0x0100: byte 0 is the instance, bytes 1 and 2 the id (little endian)."""
+    data = _bytes(raw)
+    return int.from_bytes(data[1:3], "little") if len(data) >= 3 else None
+
+
+def firmware_version(raw: Any) -> int | None:
+    """Register 0x0102 as the number VictronConnect shows (0x0164 is 1.64)."""
+    data = _bytes(raw)
+    return int.from_bytes(data[1:3], "little") if len(data) >= 3 else None
+
+
+def check_voltage_limits(item: "WriteItem", writable: Writable, *, system_voltage: int, vrange: tuple[float, float] | None) -> None:
+    """Refuse a value the device would turn into error 119 ("settings data invalid").
+
+    The device only accepts charge voltages inside its allowed range, and a temperature
+    compensation of at most 21 mV/K for a 12 V system. The error can only be cleared by a
+    restore to factory defaults followed by a power cycle.
+    """
+    value = item.value
+    if value is None or not isinstance(value, (int, float)):
+        return
+    if writable.check == "voltage":
+        low, high = vrange or (VOLTAGE_RANGE_12V[0], VOLTAGE_RANGE_12V[1] * system_voltage / 12)
+        if writable.zero_ok and value == 0:
+            return
+        if not low <= value <= high:
+            raise InvalidWriteError(f"{item.name}: {value:g} V is outside the {low:g}..{high:g} V this device accepts (it would raise error 119)")
+    elif writable.check == "tempcomp":
+        limit = TEMPERATURE_COMPENSATION_LIMIT_12V * system_voltage / 12
+        if abs(value) > limit:
+            raise InvalidWriteError(f"{item.name}: {value:g} mV/K is outside +-{limit:g} for a {system_voltage} V system (it would raise error 119)")
 
 
 @dataclass(frozen=True)
@@ -390,7 +535,12 @@ def writable_table() -> list[dict[str, Any]]:
             "vreg": f"0x{w.vreg:04x}",
             "description": w.description,
             "unit": w.unit,
-            "allowed": list(w.values) if w.values else f"{w.minimum:g}..{w.maximum:g}",
+            "allowed": list(w.values) if w.values else ("none or " if w.na_raw is not None else "") + f"{w.minimum:g}..{w.maximum:g}",
+            "vcsf": w.vcsf,
         }
         for w in WRITABLE.values()
     ]
+
+
+_register_settings()
+POLLED_VREGS: tuple[int, ...] = tuple(dict.fromkeys(_POLLED_BASE + tuple(w.vreg for w in WRITABLE.values())))

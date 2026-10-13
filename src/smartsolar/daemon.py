@@ -31,8 +31,18 @@ from smartsolar.reading import Event, Reading, local_iso, utc_iso
 from smartsolar.server import ControlServer
 from smartsolar.state import BLOCKS, AdvertStats, Cache, GattStats
 from smartsolar.tracker import DeviceTracker
-from smartsolar.profiles import PROFILE_PARAMETERS
-from smartsolar.vreg import WRITABLE, build_write, decode_vreg
+from smartsolar.vreg import (
+    PROFILE_CONTEXT_VREGS,
+    VREG_BATTERY_VOLTAGE_ACTUAL,
+    VREG_FIRMWARE,
+    VREG_PRODUCT_ID,
+    VREG_VOLTAGE_RANGE_MAX,
+    VREG_VOLTAGE_RANGE_MIN,
+    WRITABLE,
+    build_write,
+    firmware_version,
+    product_id,
+)
 
 log = logging.getLogger("smartsolard")
 
@@ -385,23 +395,32 @@ class Daemon:
 
 
     async def _cmd_settings(self, args: dict[str, Any]) -> dict[str, Any]:
-        """The current value of every writable register, read live (connects on demand)."""
+        """Every writable setting, read live (connects on demand), with what a profile is checked against."""
         if self.tracker.current_address is None:
             raise NoDataError("no device selected yet")
-        names = args.get("names") or list(PROFILE_PARAMETERS)
+        names = args.get("names") or [n for n in WRITABLE if n != "device_mode"]
         unknown = [n for n in names if n not in WRITABLE]
         if unknown:
             raise BadRequest(f"not a writable register: {', '.join(map(str, unknown))}")
+        vregs = [WRITABLE[n].vreg for n in names] + list(PROFILE_CONTEXT_VREGS)
         cfg = self.config.gatt
-        timeout = cfg.connect_timeout_s + cfg.pair_timeout_s + cfg.request_timeout_s * (len(names) + 2) + POLL_TIMEOUT_MARGIN_S
-        raw = await asyncio.wait_for(self.gatt.request_read([WRITABLE[n].vreg for n in names]), timeout)
+        timeout = cfg.connect_timeout_s + cfg.pair_timeout_s + cfg.request_timeout_s * (len(vregs) + 2) + POLL_TIMEOUT_MARGIN_S
+        raw = await asyncio.wait_for(self.gatt.request_read(vregs), timeout)
         values = []
         for name in names:
-            vreg = WRITABLE[name].vreg
-            value = decode_vreg(vreg, raw[vreg])
-            if value is not None:
-                values.append(value.as_dict() | {"name": name})
-        return {"device": self.tracker.current_address, "values": values}
+            writable = WRITABLE[name]
+            if writable.vreg not in raw:
+                continue  # this model or firmware does not have it
+            values.append({"name": name, "friendly": writable.friendly, "unit": writable.unit, "value": writable.decode(raw[writable.vreg])})
+        vmin, vmax = raw.get(VREG_VOLTAGE_RANGE_MIN), raw.get(VREG_VOLTAGE_RANGE_MAX)
+        return {
+            "device": self.tracker.current_address,
+            "product_id": product_id(raw[VREG_PRODUCT_ID]) if VREG_PRODUCT_ID in raw else None,
+            "firmware": firmware_version(raw[VREG_FIRMWARE]) if VREG_FIRMWARE in raw else None,
+            "system_voltage": bytes(raw[VREG_BATTERY_VOLTAGE_ACTUAL])[0] if VREG_BATTERY_VOLTAGE_ACTUAL in raw else None,
+            "voltage_range": [round(int.from_bytes(vmin, "little") * 0.01, 2), round(int.from_bytes(vmax, "little") * 0.01, 2)] if vmin is not None and vmax is not None else None,
+            "values": values,
+        }
 
     async def _cmd_write(self, args: dict[str, Any]) -> dict[str, Any]:
         values = args.get("values")
