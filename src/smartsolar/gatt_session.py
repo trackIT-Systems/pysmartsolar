@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from smartsolar.ble import GattLink
-from smartsolar.errors import NotConnectedError, ProtocolError, SmartsolarError
-from smartsolar.vreg import INIT_SEQUENCE, PING, VREG_KEY, RecordParser
+from smartsolar.errors import NotConnectedError, ProtocolError, SmartsolarError, WriteFailed
+from smartsolar.vreg import INIT_SEQUENCE, PING, VREG_KEY, RecordParser, get_request, set_request
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +35,8 @@ class GattSession:
         self.errors: dict[int, int] = {}  # registers the device answered with an error code
         self.acks = 0
         self.lost = asyncio.Event()
-        self._waiters: dict[int, list[asyncio.Future]] = {}
+        self.unavailable: set[int] = set()  # registers the device refused to read
+        self._waiters: dict[int, list[tuple[Callable[[Any], bool], asyncio.Future]]] = {}
         self._keepalive_task: asyncio.Task | None = None
 
     async def start(self) -> None:
@@ -59,8 +60,8 @@ class GattSession:
 
     def on_disconnect(self) -> None:
         self.lost.set()
-        for futures in self._waiters.values():
-            for future in futures:
+        for waiters in self._waiters.values():
+            for _, future in waiters:
                 if not future.done():
                     future.set_exception(NotConnectedError("link lost"))
         self._waiters.clear()
@@ -80,11 +81,19 @@ class GattSession:
             if record.kind == 0x08:
                 self.values[record.vreg] = record.value
                 self.updated[record.vreg] = now
-                for future in self._waiters.pop(record.vreg, []):
-                    if not future.done():
+                pending = self._waiters.pop(record.vreg, [])
+                for predicate, future in pending:
+                    if future.done():
+                        continue
+                    if predicate(record.value):
                         future.set_result(record.value)
+                    else:
+                        self._waiters.setdefault(record.vreg, []).append((predicate, future))
             elif record.kind == 0x09:
                 self.errors[record.vreg] = record.value if isinstance(record.value, int) else -1
+                for _, future in self._waiters.pop(record.vreg, []):
+                    if not future.done():
+                        future.set_exception(ProtocolError(f"register 0x{record.vreg:04x} is not available (code {self.errors[record.vreg]})"))
 
     async def wait_for(self, vreg: int, timeout_s: float) -> Any:
         """The value of a register, waiting for it if it has not arrived yet."""
@@ -92,12 +101,54 @@ class GattSession:
             return self.values[vreg]
         if self.lost.is_set():
             raise NotConnectedError("link lost")
+        return await self._await_value(vreg, lambda _: True, timeout_s)
+
+    async def _await_value(self, vreg: int, predicate: Callable[[Any], bool], timeout_s: float) -> Any:
+        future = self._expect(vreg, predicate)
+        return await self._wait(future, vreg, timeout_s)
+
+    def _expect(self, vreg: int, predicate: Callable[[Any], bool]) -> asyncio.Future:
         future: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._waiters.setdefault(vreg, []).append(future)
+        self._waiters.setdefault(vreg, []).append((predicate, future))
+        return future
+
+    @staticmethod
+    async def _wait(future: asyncio.Future, vreg: int, timeout_s: float) -> Any:
         try:
             return await asyncio.wait_for(future, timeout_s)
         except TimeoutError:
             raise ProtocolError(f"register 0x{vreg:04x} was not answered within {timeout_s:g} s") from None
+
+    async def request(self, vreg: int, timeout_s: float) -> Any:
+        """Read a register now (the value that arrives after the request, not a cached one)."""
+        future = self._expect(vreg, lambda _: True)
+        await self.link.write("0024", get_request(vreg))
+        return await self._wait(future, vreg, timeout_s)
+
+    async def refresh(self, vregs: Iterable[int], timeout_s: float = 1.0) -> None:
+        """Read registers one after the other. Ones the device refuses are not asked for again."""
+        for vreg in vregs:
+            if vreg in self.unavailable:
+                continue
+            try:
+                await self.request(vreg, timeout_s)
+            except NotConnectedError:
+                raise
+            except ProtocolError as exc:
+                if vreg in self.errors:
+                    self.unavailable.add(vreg)
+                log.debug("refresh: %s", exc)
+
+    async def write_register(self, vreg: int, raw: bytes, timeout_s: float) -> Any:
+        """Write a register. The device answers with a value record echoing what it stored."""
+        future = self._expect(vreg, lambda value: bytes(value) == raw if isinstance(value, (bytes, bytearray)) else False)
+        await self.link.write("0024", set_request(vreg, raw))
+        try:
+            return await asyncio.wait_for(future, timeout_s)
+        except TimeoutError:
+            raise WriteFailed(f"register 0x{vreg:04x}: the device did not confirm the write (read-only, or the value was refused)") from None
+        except ProtocolError as exc:
+            raise WriteFailed(str(exc)) from None
 
     async def fetch_key(self, timeout_s: float) -> bytes:
         raw = await self.wait_for(VREG_KEY, timeout_s)

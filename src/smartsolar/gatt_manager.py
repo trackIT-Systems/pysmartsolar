@@ -25,11 +25,11 @@ from typing import Any
 
 from smartsolar.ble import Advertisement, BleBackend, GattLink
 from smartsolar.config import GattConfig
-from smartsolar.errors import ConnectError, NoDataError, NotConnectedError, SmartsolarError
+from smartsolar.errors import ConnectError, NoDataError, NotConnectedError, SmartsolarError, WriteFailed
 from smartsolar.gatt_session import GattSession
 from smartsolar.reading import Event, Reading
 from smartsolar.state import GattStats
-from smartsolar.vreg import VREG_KEY, VREGS, decode_vreg
+from smartsolar.vreg import POLLED_VREGS, VREG_KEY, VREGS, WriteItem, decode_vreg
 
 log = logging.getLogger(__name__)
 
@@ -118,6 +118,7 @@ class GattManager:
         self._device_changed = False
         self._poll_futures: list[asyncio.Future] = []
         self._key_futures: list[asyncio.Future] = []
+        self._write_requests: list[tuple[list[WriteItem], asyncio.Future]] = []
         self._poll_now = False
         self._next_poll = 0.0
         self._paired: set[str] = set()
@@ -138,6 +139,13 @@ class GattManager:
         """Connect and read the Instant Readout key now. The future resolves with the key bytes."""
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._key_futures.append(future)
+        self._wake.set()
+        return future
+
+    def request_write(self, items: list[WriteItem]) -> asyncio.Future:
+        """Connect if needed, write the registers, read them back. Resolves with one result per item."""
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._write_requests.append((items, future))
         self._wake.set()
         return future
 
@@ -211,7 +219,7 @@ class GattManager:
         return bool(self._key_futures) or not self._key_known(adv.address)
 
     def _has_work(self, adv: Advertisement) -> bool:
-        if self._needs_key(adv):
+        if self._needs_key(adv) or self._write_requests:
             return True
         if self.cfg.mode == "hold":
             return True
@@ -307,6 +315,7 @@ class GattManager:
                 if not future.done():
                     future.set_result(key)
             self._key_futures = []
+        await self._do_writes(adv, session)
         if self.cfg.mode == "poll":
             await self._collect(adv, session)
         elif self.cfg.mode == "hold":
@@ -324,6 +333,7 @@ class GattManager:
 
     async def _collect(self, adv: Advertisement, session: GattSession) -> None:
         await self._wait_expected(session, self.cfg.collect_s)
+        await self._until_stop(session.refresh(POLLED_VREGS))
         reading = self.snapshot()
         if reading is None:
             raise NoDataError("the device sent no values")
@@ -346,13 +356,57 @@ class GattManager:
                 raise NotConnectedError("link lost")
             if self._reconnect or self._device_changed:
                 return
+            await self._do_writes(adv, session)
             if self._clock() >= next_publish:
+                await self._until_stop(session.refresh(POLLED_VREGS))
                 reading = self.snapshot()
                 if reading is not None:
                     self._emit_reading(reading)
                     self.last_poll = reading.time
                 next_publish = self._clock() + self.cfg.publish_interval_s
             await self._sleep(max(0.0, min(1.0, next_publish - self._clock())))
+
+    async def _do_writes(self, adv: Advertisement, session: GattSession) -> None:
+        """Run the queued writes: note the old value, write, check the echo, read the register back."""
+        while self._write_requests:
+            items, future = self._write_requests.pop(0)
+            results: list[dict[str, Any]] = []
+            try:
+                for item in items:
+                    old_raw = session.values.get(item.vreg)
+                    if old_raw is None:
+                        try:
+                            old_raw = await self._until_stop(session.request(item.vreg, self.cfg.request_timeout_s))
+                        except SmartsolarError:
+                            old_raw = None
+                    await self._until_stop(session.write_register(item.vreg, item.raw, self.cfg.request_timeout_s))
+                    read_raw = await self._until_stop(session.request(item.vreg, self.cfg.request_timeout_s))
+                    ok = bytes(read_raw) == item.raw
+                    old = decode_vreg(item.vreg, old_raw) if old_raw is not None else None
+                    new = decode_vreg(item.vreg, read_raw)
+                    result = {
+                        "name": item.name,
+                        "requested": item.value,
+                        "old": old.value if old else None,
+                        "value": new.value if new else None,
+                        "ok": ok,
+                    }
+                    results.append(result)
+                    self._event("register_written", adv.address, name=item.name, old=result["old"], new=result["value"], requested=item.value, ok=ok)
+                    if not ok:
+                        raise WriteFailed(f"{item.name}: written as {item.value}, but the device reports {result['value']}")
+                future.set_result(results)
+            except _Stopping:
+                if not future.done():
+                    future.set_exception(NotConnectedError("shutting down"))
+                raise
+            except NotConnectedError as exc:
+                if not future.done():
+                    future.set_exception(exc)
+                raise
+            except (SmartsolarError, TimeoutError) as exc:
+                if not future.done():
+                    future.set_exception(exc)
 
     async def _failed(self, adv: Advertisement, exc: BaseException) -> None:
         message = str(exc) or type(exc).__name__
@@ -415,11 +469,12 @@ class GattManager:
             log.debug("disconnect: %s", exc)
 
     async def _teardown(self) -> None:
-        for future in self._poll_futures + self._key_futures:
+        for future in self._poll_futures + self._key_futures + [f for _, f in self._write_requests]:
             if not future.done():
                 future.set_exception(NotConnectedError("shutting down"))
         self._poll_futures = []
         self._key_futures = []
+        self._write_requests = []
 
     def _set_state(self, state: GattState) -> None:
         if state is self.state:

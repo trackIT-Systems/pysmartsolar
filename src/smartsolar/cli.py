@@ -11,9 +11,9 @@ from typing import Any
 
 from smartsolar import __version__, instant, ipc
 from smartsolar.config import DEFAULT_CONFIG_PATH, DEFAULT_SOCKET_PATH, load_config, parse_key
-from smartsolar.errors import AdvertError, ConfigError, DaemonError, DaemonUnreachable, SmartsolarError
+from smartsolar.errors import AdvertError, ConfigError, DaemonError, DaemonUnreachable, InvalidWriteError, SmartsolarError
 from smartsolar.tracker import advert_values
-from smartsolar.vreg import vreg_table
+from smartsolar.vreg import build_write, vreg_table, writable_table
 
 EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_UNREACHABLE = 0, 1, 2, 3
 
@@ -205,6 +205,13 @@ def cmd_decode(args: argparse.Namespace) -> int:
 
 
 def cmd_vregs(args: argparse.Namespace) -> int:
+    if args.writable:
+        rows = writable_table()
+        if args.json:
+            print(json.dumps(rows, indent=2, ensure_ascii=False))
+        else:
+            print(table([[r["name"], r["vreg"], r["unit"], str(r["allowed"]) if isinstance(r["allowed"], str) else ", ".join(r["allowed"]), r["description"]] for r in rows], ["NAME", "VREG", "UNIT", "ALLOWED", "DESCRIPTION"]))
+        return EXIT_OK
     rows = vreg_table()
     if args.json:
         print(json.dumps(rows, indent=2, ensure_ascii=False))
@@ -213,15 +220,54 @@ def cmd_vregs(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def parse_assignments(items: list[str]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for item in items:
+        name, sep, value = item.partition("=")
+        if not sep or not name.strip():
+            raise InvalidWriteError(f"expected NAME=VALUE, got {item!r}")
+        values[name.strip()] = value.strip()
+    return values
+
+
+def confirm_write(lines: list[str], yes: bool) -> int | None:
+    """Ask before writing; return an exit code to stop with, or None to go ahead."""
+    if yes:
+        return None
+    if not sys.stdin.isatty():
+        print("error: refusing to write without confirmation, use --yes", file=sys.stderr)
+        return EXIT_USAGE
+    print("About to write to the device:")
+    for line in lines:
+        print(f"  {line}")
+    if input("Write? [y/N] ").strip().lower() not in ("y", "yes"):
+        print("aborted")
+        return EXIT_ERROR
+    return None
+
+
+def cmd_write(args: argparse.Namespace, socket: Path) -> int:
+    values = parse_assignments(args.assignments)
+    items = build_write(values)  # fail early, before asking
+    refused = confirm_write([f"{i.name} = {fmt_value(i.value)}" for i in items], args.yes)
+    if refused is not None:
+        return refused
+    result = ipc.request(socket, "write", {"values": values}, timeout=180)
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print(table([[w["name"], fmt_value(w["old"]), "->", fmt_value(w["value"]), "ok" if w["ok"] else "MISMATCH"] for w in result["written"]]))
+    return EXIT_OK if all(w["ok"] for w in result["written"]) else EXIT_ERROR
+
+
 def run(args: argparse.Namespace) -> int:
     if args.cmd == "decode":
         return cmd_decode(args)
     if args.cmd == "vregs":
         return cmd_vregs(args)
-    if args.cmd == "write":
-        print("error: writing to the device is not implemented yet (the GATT write protocol is not reverse engineered)", file=sys.stderr)
-        return EXIT_ERROR
     socket = resolve_socket(args)
+    if args.cmd == "write":
+        return cmd_write(args, socket)
 
     def show(result: Any, text: str) -> int:
         print(json.dumps(result, indent=2, ensure_ascii=False) if args.json else text)
@@ -287,9 +333,11 @@ def build_parser() -> argparse.ArgumentParser:
     decode.add_argument("--key", help="the 32 hex digit key")
     decode.add_argument("--key-file", type=Path, help="file containing the key")
     decode.add_argument("data", help="manufacturer data after the company id, hex, e.g. 100253a001...")
-    sub.add_parser("vregs", parents=[common], help="the registers decoded over GATT (no daemon)")
-    write = sub.add_parser("write", parents=[common], help="not implemented: writing to the device")
-    write.add_argument("assignments", nargs="*")
+    vregs = sub.add_parser("vregs", parents=[common], help="the registers decoded over GATT (no daemon)")
+    vregs.add_argument("--writable", action="store_true", help="list the registers `write` can change, with their allowed values")
+    write = sub.add_parser("write", parents=[common], help="write registers over GATT, e.g. write device_mode=off (see vregs --writable)")
+    write.add_argument("assignments", nargs="+", metavar="NAME=VALUE")
+    write.add_argument("--yes", "-y", action="store_true", help="do not ask for confirmation")
     return parser
 
 
@@ -303,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
     except DaemonError as exc:
         print(f"error: {exc.message}", file=sys.stderr)
         return EXIT_ERROR
-    except ConfigError as exc:
+    except (ConfigError, InvalidWriteError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     except SmartsolarError as exc:

@@ -11,7 +11,7 @@ import cbor2
 from smartsolar import instant
 from smartsolar.ble import Advertisement
 from smartsolar.errors import ConnectError, NotConnectedError
-from smartsolar.vreg import PING
+from smartsolar.vreg import PING, parse_requests
 
 TEST_KEY = bytes.fromhex("4b2f9c10e7a35d68c1b0f4372ea98d56")
 OTHER_KEY = bytes.fromhex("4b00112233445566778899aabbccddee")  # same check byte, other key
@@ -56,6 +56,23 @@ def default_values() -> dict[int, bytes]:
         0xEDEC: bytes.fromhex("ffff"),
         0xEC65: TEST_KEY,
     }
+
+
+def default_registers() -> dict[int, bytes]:
+    """What the fake answers to a read (ctx 3); the values are the ones the real device had."""
+    registers = dict(default_values())
+    registers.update(
+        {
+            0x0200: b"\x01", 0x0201: b"\x00", 0xEDDA: b"\x00", 0xEDD5: (1331).to_bytes(2, "little"), 0xEDD7: bytes(2),
+            0xEDD3: bytes(4), 0xEDD2: bytes(4), 0xEDD1: bytes(4), 0xEDD0: bytes(4), 0xEDDC: (9847).to_bytes(4, "little"),
+            0xEDDB: bytes.fromhex("400b"), 0xEDBB: bytes.fromhex("0300"), 0xEDBC: bytes(4), 0xEDAB: b"\x02", 0xEDAD: bytes(2),
+            0xEDF0: bytes.fromhex("9600"), 0xEDF1: b"\xff", 0xEDF6: bytes.fromhex("4605"), 0xEDF7: bytes.fromhex("aa05"), 0xEDEF: b"\x0c",
+        }
+    )
+    return registers
+
+
+WRITABLE_REGISTERS = {0x0200, 0xEDAB, 0xEDF6, 0xEDF7, 0xEDF0}
 
 
 class FakeLink:
@@ -108,10 +125,35 @@ class FakeLink:
             self.pings += 1
             self._arm_deadline()
             self._emit("0024", bytes.fromhex("08001893421027"))
+        if char == "0024" and data[:1] in (b"\x05", b"\x06"):
+            self._answer_requests(data)
         if char == "0021" and data == bytes.fromhex("f941"):
             burst = b"".join(record8(v, raw, ctx=3 if v != 0xEC65 else 0) for v, raw in self.backend.values.items())
             for i in range(0, len(burst), 20):  # a record can be split across notifications
                 self._emit("0024", burst[i : i + 20])
+
+    def _answer_requests(self, data: bytes) -> None:
+        try:
+            requests = parse_requests(data)
+        except Exception:  # a record that continues in the next write
+            return
+        for kind, ctx, items in requests:
+            if ctx != 3:
+                continue  # the real device refuses these for most registers; the tests do not need it
+            if kind == 5:
+                for vreg in items:
+                    self.backend.get_log.append(vreg)
+                    if vreg in self.backend.registers:
+                        self._emit("0024", record8(vreg, self.backend.registers[vreg], ctx=3))
+                    else:
+                        self._emit("0024", bytes([0x09, 3]) + cbor2.dumps(vreg) + cbor2.dumps(1))
+            elif kind == 6:
+                vreg, raw = items
+                self.backend.set_log.append((vreg, raw))
+                if vreg in WRITABLE_REGISTERS and not self.backend.refuse_writes:
+                    self.backend.registers[vreg] = raw
+                    self._emit("0024", record8(vreg, raw, ctx=3))
+                # a write the device does not accept gets no answer
 
     def push(self, vreg: int, raw: bytes) -> None:
         self.backend.values[vreg] = raw
@@ -137,6 +179,10 @@ class FakeBackend:
         self.scanning = False
         self.scan_starts = 0
         self.values = default_values()
+        self.registers = default_registers()
+        self.get_log: list[int] = []
+        self.set_log: list[tuple[int, bytes]] = []
+        self.refuse_writes = False
         self.keepalive_timeout: float | None = None
         self.connect_errors: list[Exception] = []  # popped one per connect call
         self.connect_delay = 0.0

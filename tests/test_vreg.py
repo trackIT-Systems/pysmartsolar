@@ -1,14 +1,16 @@
 import cbor2
+import pytest
 
 from fakes import TEST_KEY, record8
-from smartsolar.vreg import PING, VREG_KEY, RecordParser, decode_vreg, get_request, vreg_table, INIT_SEQUENCE
+from smartsolar.errors import InvalidWriteError
+from smartsolar.vreg import INIT_SEQUENCE, PING, VREG_KEY, WRITABLE, RecordParser, build_write, decode_vreg, get_request, parse_requests, set_request, vreg_table, writable_table
 
 
 def test_get_request_bytes_match_the_captured_ones():
-    assert get_request(0xEC65) == bytes.fromhex("05008119ec65")
-    assert get_request(0x0102, ctx=3) == bytes.fromhex("050381190102")
-    assert get_request(0x90) == bytes.fromhex("0500811890")  # one byte CBOR ids work too
-    assert get_request(0xEC66, 0xEC65) == bytes.fromhex("05008219ec6619ec65")  # several registers in one request
+    assert get_request(0xEC65, ctx=0) == bytes.fromhex("05008119ec65")
+    assert get_request(0x0102, ctx=3) == bytes.fromhex("050381190102") == get_request(0x0102)  # ctx 3 is the default
+    assert get_request(0x90, ctx=0) == bytes.fromhex("0500811890")  # one byte CBOR ids work too
+    assert get_request(0xEC66, 0xEC65, ctx=0) == bytes.fromhex("05008219ec6619ec65")  # several registers in one request
 
 
 def test_init_sequence_contains_the_handshake_and_the_ping():
@@ -105,3 +107,67 @@ def test_vreg_table():
     rows = vreg_table()
     assert rows == sorted(rows, key=lambda r: r["id"]) and all(set(r) == {"id", "name", "friendly", "unit", "verified"} for r in rows)
     assert not any(r["id"] == "0xec65" for r in rows)
+
+
+def test_set_requests_match_the_captured_ones():
+    assert set_request(0x93, bytes.fromhex("1027"), ctx=0) == PING  # the keepalive
+    assert set_request(0xEDAB, b"\x02") == bytes.fromhex("06038219edab4102")  # captured: load output control = 2
+    assert set_request(0xEDF6, bytes.fromhex("4705")) == bytes.fromhex("06038219edf6424705")
+    assert set_request(0x0200, b"\x04") == bytes.fromhex("0603821902004104")
+
+
+def test_parse_requests_round_trips():
+    data = get_request(0xEDD5) + set_request(0x0200, b"\x04") + get_request(0xEC66, 0xEC65, ctx=0)
+    assert parse_requests(data) == [(5, 3, [0xEDD5]), (6, 3, [0x0200, b"\x04"]), (5, 0, [0xEC66, 0xEC65])]
+
+
+def test_build_write_encodes_like_the_captured_writes():
+    (item,) = build_write({"load_output_control": "alt1"})
+    assert (item.vreg, item.raw, item.value) == (0xEDAB, b"\x02", "alt1")
+    assert build_write({"load_output_control": " ON "})[0].raw == b"\x04" and build_write({"device_mode": "off"})[0].raw == b"\x04"
+    float_item = build_write({"float_voltage": "13.51"})[0]
+    assert float_item.raw == bytes.fromhex("4705") and float_item.value == 13.51  # 1351 = 0x0547
+    assert build_write({"battery_max_current": 15})[0].raw == bytes.fromhex("9600")
+
+
+def test_build_write_keeps_the_order_and_handles_several_registers():
+    items = build_write({"device_mode": "on", "float_voltage": 13.5})
+    assert [i.name for i in items] == ["device_mode", "float_voltage"]
+
+
+@pytest.mark.parametrize(
+    "values, message",
+    [
+        ({}, "nothing to write"),
+        ({"device_mode": "sleep"}, "is not one of on, off"),
+        ({"load_output_control": "auto"}, "is not one of off, alt1, on"),  # not verified on a device: refused
+        ({"battery_voltage": 12}, "read-only"),
+        ({"key": "x"}, "unknown register"),
+        ({"vreg_ec65": "00"}, "unknown register"),
+        ({"float_voltage": "high"}, "not a number"),
+        ({"float_voltage": 4.9}, "outside"),
+        ({"float_voltage": 70.5}, "outside"),
+        ({"battery_max_current": -1}, "outside"),
+    ],
+)
+def test_build_write_refuses(values, message):
+    with pytest.raises(InvalidWriteError, match=message):
+        build_write(values)
+
+
+def test_the_key_and_the_keepalive_cannot_be_written():
+    assert not {0xEC65, 0x93, 0x0001}.intersection(w.vreg for w in WRITABLE.values())
+    assert {w["name"] for w in writable_table()} == set(WRITABLE)
+
+
+def test_the_new_registers_decode_with_the_values_seen_on_the_device():
+    assert decode_vreg(0x0200, b"\x01").value == "on" and decode_vreg(0x0200, b"\x04").value == "off"
+    assert decode_vreg(0x0201, b"\x00").value == "off" and decode_vreg(0x0201, b"\x03").value == "bulk"
+    assert decode_vreg(0xEDDA, b"\x00").value == "none" and decode_vreg(0xEDDA, b"\x02").value == "battery voltage too high"
+    assert decode_vreg(0xEDD5, bytes.fromhex("3305")).value == 13.31
+    assert decode_vreg(0xEDBB, bytes.fromhex("0300")).value == 0.03
+    assert decode_vreg(0xEDAB, b"\x02").value == "alt1" and decode_vreg(0xEDAB, b"\x00").value == "off" and decode_vreg(0xEDAB, b"\x09").value == "unknown (9)"
+    assert decode_vreg(0xEDF6, bytes.fromhex("4605")).value == 13.5 and decode_vreg(0xEDF7, bytes.fromhex("aa05")).value == 14.5
+    assert decode_vreg(0xEDF0, bytes.fromhex("9600")).value == 15.0
+    assert decode_vreg(0xEDDB, bytes.fromhex("400b")).value == 28.8
+    assert decode_vreg(0xEDDC, bytes.fromhex("77260000")).value == 98.47

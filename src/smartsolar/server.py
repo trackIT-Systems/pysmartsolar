@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from smartsolar import ipc
-from smartsolar.errors import BadRequest, NoDataError, NotConnectedError, ProtocolError, SmartsolarError
+from smartsolar.errors import BadRequest, InvalidWriteError, NoDataError, NotConnectedError, ProtocolError, SmartsolarError, WriteFailed
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +24,8 @@ ERROR_TYPES: list[tuple[type[BaseException], str]] = [
     (BadRequest, "bad_request"),
     (NotConnectedError, "not_connected"),
     (NoDataError, "no_data"),
+    (InvalidWriteError, "invalid_write"),
+    (WriteFailed, "write_failed"),
     (TimeoutError, "timeout"),
     (ProtocolError, "protocol_error"),
 ]

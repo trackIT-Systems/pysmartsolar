@@ -250,9 +250,66 @@ def test_vregs_works_offline(capsys):
     assert cli.main(["vregs", "--json"]) == 0 and json.loads(capsys.readouterr().out)[0]["id"].startswith("0x")
 
 
-def test_write_is_not_implemented(capsys, tmp_path):
-    assert cli.main(["--socket", str(tmp_path / "none.sock"), "write", "load_output=on"]) == 1
-    assert "not implemented" in capsys.readouterr().err
+WRITE_OK = {"device": "AA", "written": [{"name": "device_mode", "requested": "off", "old": "on", "value": "off", "ok": True}]}
+
+
+def test_write_with_yes_sends_the_request_and_shows_old_and_new(capsys):
+    with StubDaemon({"write": WRITE_OK}) as d:
+        assert run_cli(d, "write", "device_mode=off", "--yes") == 0
+        assert d.calls[-1] == ("write", {"values": {"device_mode": "off"}})
+        assert capsys.readouterr().out.split() == ["device_mode", "on", "->", "off", "ok"]
+        assert run_cli(d, "write", "device_mode=off", "-y", "--json") == 0
+        assert json.loads(capsys.readouterr().out)["written"][0]["ok"] is True
+
+
+def test_write_reports_a_mismatch_with_exit_code_1(capsys):
+    bad = {"device": "AA", "written": [{"name": "float_voltage", "requested": 13.6, "old": 13.5, "value": 13.5, "ok": False}]}
+    with StubDaemon({"write": bad}) as d:
+        assert run_cli(d, "write", "float_voltage=13.6", "--yes") == 1
+        assert "MISMATCH" in capsys.readouterr().out
+
+
+def test_write_asks_for_confirmation(capsys, monkeypatch):
+    with StubDaemon({"write": WRITE_OK}) as d:
+        monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda self: False})())
+        assert run_cli(d, "write", "device_mode=off") == 2 and d.calls == []  # not a terminal and no --yes
+        monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda self: True})())
+        monkeypatch.setattr("builtins.input", lambda prompt: "n")
+        assert run_cli(d, "write", "device_mode=off") == 1 and d.calls == []
+        monkeypatch.setattr("builtins.input", lambda prompt: "y")
+        assert run_cli(d, "write", "device_mode=off") == 0 and len(d.calls) == 1
+    assert "device_mode = off" in capsys.readouterr().out
+
+
+def test_write_is_validated_before_contacting_the_daemon(capsys):
+    with StubDaemon({"write": WRITE_OK}) as d:
+        for argv, message in (
+            (["device_mode=sleep"], "is not one of"),
+            (["battery_voltage=12"], "read-only"),
+            (["nonsense=1"], "unknown register"),
+            (["float_voltage=lots"], "not a number"),
+            (["float_voltage=500"], "outside"),
+            (["oops"], "NAME=VALUE"),
+        ):
+            assert run_cli(d, "write", *argv, "--yes") == 2
+            assert message in capsys.readouterr().err
+        assert d.calls == []
+
+
+def test_write_errors_from_the_daemon(capsys):
+    from smartsolar.errors import WriteFailed
+
+    with StubDaemon({"write": WriteFailed("register 0xedab: the device did not confirm the write")}) as d:
+        assert run_cli(d, "write", "load_output_control=off", "--yes") == 1
+        assert "did not confirm" in capsys.readouterr().err
+
+
+def test_vregs_writable_lists_the_allowed_values(capsys):
+    assert cli.main(["vregs", "--writable"]) == 0
+    out = capsys.readouterr().out
+    assert "device_mode" in out and "on, off" in out and "float_voltage" in out and "5..70" in out
+    assert cli.main(["vregs", "--writable", "--json"]) == 0
+    assert {r["name"] for r in json.loads(capsys.readouterr().out)} >= {"device_mode", "load_output_control"}
 
 
 def test_socket_comes_from_an_explicit_config(tmp_path):

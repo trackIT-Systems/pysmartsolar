@@ -31,6 +31,7 @@ from smartsolar.reading import Event, Reading, local_iso, utc_iso
 from smartsolar.server import ControlServer
 from smartsolar.state import BLOCKS, AdvertStats, Cache, GattStats
 from smartsolar.tracker import DeviceTracker
+from smartsolar.vreg import build_write
 
 log = logging.getLogger("smartsolard")
 
@@ -246,6 +247,7 @@ class Daemon:
             "rescan": self._cmd_rescan,
             "scan": self._cmd_scan,
             "fetch_key": self._cmd_fetch_key,
+            "write": self._cmd_write,
         }
 
     def _key_status(self) -> str:
@@ -378,6 +380,19 @@ class Daemon:
         if args.get("show"):
             result["key"] = key.hex()
         return result
+
+
+    async def _cmd_write(self, args: dict[str, Any]) -> dict[str, Any]:
+        values = args.get("values")
+        if not isinstance(values, dict) or not values:
+            raise BadRequest("args.values must be an object of name: value")
+        items = build_write(values)  # InvalidWriteError before anything is sent
+        if self.tracker.current_address is None:
+            raise NoDataError("no device selected yet")
+        cfg = self.config.gatt
+        timeout = cfg.connect_timeout_s + cfg.pair_timeout_s + cfg.request_timeout_s * (3 * len(items) + 2) + POLL_TIMEOUT_MARGIN_S
+        results = await asyncio.wait_for(self.gatt.request_write(items), timeout)
+        return {"device": self.tracker.current_address, "written": results}
 
 
 def main(argv: list[str] | None = None) -> int:

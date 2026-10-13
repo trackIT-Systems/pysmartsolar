@@ -324,3 +324,41 @@ def test_a_scan_that_cannot_start_is_retried():
         shutil.rmtree(env.dir, ignore_errors=True)
 
     run(go())
+
+
+def test_write_command_changes_a_register_and_logs_it():
+    async def go():
+        async with Env() as env:
+            await env.select()
+            result = await env.call("write", values={"device_mode": "off", "float_voltage": 13.51})
+            assert result["device"] == A
+            assert [(w["name"], w["old"], w["value"], w["ok"]) for w in result["written"]] == [("device_mode", "on", "off", True), ("float_voltage", 13.5, 13.51, True)]
+            assert env.backend.registers[0x0200] == b"\x04"
+            events = [json.loads(p) for t, p, _ in env.mqtt.published if t == "tracker/smartsolar/events/json"]
+            written = [e for e in events if e["event"] == "register_written"]
+            assert [(e["name"], e["new"], e["ok"]) for e in written] == [("device_mode", "off", True), ("float_voltage", 13.51, True)]
+            with env.csv_path.open() as handle:
+                rows = list(csv.DictReader(handle))
+            assert any(r["block"] == "event" and r["key"] == "register_written" and "name=device_mode" in r["value"] for r in rows)
+
+    run(go())
+
+
+def test_write_command_errors():
+    async def go():
+        async with Env() as env:
+            with pytest.raises(DaemonError) as err:
+                await env.call("write", values={"device_mode": "off"})
+            assert err.value.type == "no_data"  # no device selected yet
+            await env.select()
+            for values, kind in (({"device_mode": "sleep"}, "invalid_write"), ({"battery_voltage": 12}, "invalid_write"), ({}, "bad_request"), ("x", "bad_request")):
+                with pytest.raises(DaemonError) as err:
+                    await env.call("write", values=values)
+                assert err.value.type == kind
+            assert env.backend.links == []  # nothing was sent, no connection was opened
+            env.backend.refuse_writes = True
+            with pytest.raises(DaemonError) as err:
+                await env.call("write", values={"device_mode": "off"})
+            assert err.value.type == "write_failed" and "did not confirm" in err.value.message
+
+    run(go())

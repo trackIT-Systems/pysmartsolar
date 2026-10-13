@@ -34,6 +34,14 @@ class ProtocolError(SmartsolarError):
     """The device sent something the GATT protocol parser cannot use, or did not answer in time."""
 
 
+class InvalidWriteError(SmartsolarError):
+    """A write request failed validation before anything was sent."""
+
+
+class WriteFailed(SmartsolarError):
+    """The device did not accept a write, or does not report the written value."""
+
+
 class AdvertError(SmartsolarError):
     """An Instant Readout advertisement cannot be decoded."""
 

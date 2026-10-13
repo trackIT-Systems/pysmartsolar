@@ -4,10 +4,10 @@ import pytest
 
 from fakes import A, B, TEST_KEY, FakeBackend, advert, connect_error, run, until
 from smartsolar.config import GattConfig
-from smartsolar.errors import NoDataError, NotConnectedError, PairingError
+from smartsolar.errors import NoDataError, NotConnectedError, PairingError, WriteFailed
 from smartsolar.gatt_manager import GattManager, GattState
 from smartsolar.state import GattStats
-from smartsolar.vreg import VREG_KEY
+from smartsolar.vreg import VREG_KEY, build_write
 
 
 class Rig:
@@ -266,5 +266,106 @@ def test_unknown_registers_are_only_available_raw():
             raw = rig.mgr.raw_registers()  # still there after the session closed
             assert raw["0xed8c"] == "d8ffffff" and raw["0xed8d"] == "3305"
             assert "0xec65" not in raw and TEST_KEY.hex() not in str(raw)
+
+    run(go())
+
+
+def test_poll_mode_publishes_the_registers_read_after_the_init_sequence():
+    async def go():
+        async with Rig("poll") as rig:
+            await until(lambda: rig.readings)
+            values = {v.name: v.value for v in rig.readings[0].values}
+            assert values["battery_voltage"] == 13.31 and values["device_mode"] == "on" and values["device_state"] == "off"
+            assert values["load_output_control"] == "alt1" and values["float_voltage"] == 13.5 and values["battery_max_current"] == 15.0
+            assert values["yield_total"] == 98.47 and values["charger_temperature"] == 28.8 and values["charger_error"] == "none"
+
+    run(go())
+
+
+def test_registers_the_device_refuses_are_not_asked_for_again():
+    async def go():
+        backend = FakeBackend()
+        del backend.registers[0xEDD7]
+        async with Rig("hold", backend=backend) as rig:
+            await until(lambda: len(rig.readings) >= 3)
+            assert backend.get_log.count(0xEDD7) == 1 and backend.get_log.count(0xEDD5) >= 3
+
+    run(go())
+
+
+def test_a_write_in_mode_off_connects_writes_reads_back_and_disconnects():
+    async def go():
+        async with Rig("off") as rig:
+            results = await asyncio.wait_for(rig.mgr.request_write(build_write({"device_mode": "off", "float_voltage": 13.51})), 3.0)
+            assert [(r["name"], r["old"], r["value"], r["ok"]) for r in results] == [("device_mode", "on", "off", True), ("float_voltage", 13.5, 13.51, True)]
+            assert rig.backend.registers[0x0200] == b"\x04" and rig.backend.registers[0xEDF6] == bytes.fromhex("4705")
+            await until(lambda: rig.mgr.state is GattState.IDLE)
+            assert len(rig.backend.links) == 1 and rig.backend.links[0].disconnect_calls == 1
+            written = [e for e in rig.events if e.kind == "register_written"]
+            assert [(e.data["name"], e.data["old"], e.data["new"], e.data["ok"]) for e in written] == [("device_mode", "on", "off", True), ("float_voltage", 13.5, 13.51, True)]
+            assert rig.readings == []  # a write does not publish a reading in mode off
+
+    run(go())
+
+
+def test_a_write_in_hold_mode_uses_the_open_link():
+    async def go():
+        async with Rig("hold") as rig:
+            await until(lambda: rig.mgr.state is GattState.CONNECTED)
+            (result,) = await asyncio.wait_for(rig.mgr.request_write(build_write({"load_output_control": "off"})), 3.0)
+            assert result["old"] == "alt1" and result["value"] == "off" and result["ok"]
+            assert len(rig.backend.links) == 1 and rig.backend.links[0].is_connected
+            await until(lambda: any({v.name: v.value for v in r.values}.get("load_output_control") == "off" for r in rig.readings))
+
+    run(go())
+
+
+def test_a_refused_write_fails_the_request_but_keeps_the_link():
+    async def go():
+        backend = FakeBackend()
+        backend.refuse_writes = True
+        async with Rig("hold", backend=backend) as rig:
+            await until(lambda: rig.mgr.state is GattState.CONNECTED)
+            with pytest.raises(WriteFailed, match="did not confirm"):
+                await asyncio.wait_for(rig.mgr.request_write(build_write({"device_mode": "off"})), 5.0)
+            assert rig.mgr.state is GattState.CONNECTED and len(backend.links) == 1
+            backend.refuse_writes = False
+            (result,) = await asyncio.wait_for(rig.mgr.request_write(build_write({"device_mode": "off"})), 5.0)
+            assert result["ok"]
+
+    run(go())
+
+
+def test_a_write_the_device_reads_back_differently_is_reported():
+    async def go():
+        backend = FakeBackend()
+        async with Rig("hold", backend=backend) as rig:
+            await until(lambda: rig.mgr.state is GattState.CONNECTED)
+            link = backend.links[0]
+            original = link._answer_requests
+
+            def clamp(data):  # the device stores another value than the one it echoes
+                original(data)
+                if backend.set_log and backend.set_log[-1][0] == 0xEDF6:
+                    backend.registers[0xEDF6] = bytes.fromhex("4605")
+
+            link._answer_requests = clamp
+            with pytest.raises(WriteFailed, match="reports 13.5"):
+                await asyncio.wait_for(rig.mgr.request_write(build_write({"float_voltage": 13.6})), 5.0)
+            assert [e.data["ok"] for e in rig.events if e.kind == "register_written"] == [False]
+
+    run(go())
+
+
+def test_pending_writes_fail_when_the_manager_stops():
+    async def go():
+        backend = FakeBackend()
+        backend.connect_delay = 10
+        rig = Rig("off", backend=backend)
+        async with rig:
+            future = rig.mgr.request_write(build_write({"device_mode": "off"}))
+            await until(lambda: rig.mgr.state is GattState.CONNECTING)
+        with pytest.raises(NotConnectedError):
+            future.result()
 
     run(go())
