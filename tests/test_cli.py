@@ -395,6 +395,19 @@ def test_profile_load_writes_only_the_differences_in_order_and_verifies(capsys):
         assert "written and verified: 3 value(s)" in capsys.readouterr().out
 
 
+def test_profile_load_for_another_product_needs_ignore_device(capsys):
+    other = {**settings(float_voltage=13.8), "product_id": 0xA042, "firmware": 0x100}
+    ok = {"written": [{"name": "float_voltage", "requested": 13.5, "old": 13.8, "value": 13.5, "ok": True}]}
+    with StubDaemon({"settings": other, "write": ok}) as d:
+        assert run_cli(d, "profile", "load", str(DATA), "--yes") == 2
+        err = capsys.readouterr().err
+        assert "product 0xA053" in err and "--ignore-device" in err
+        assert "write" not in [c[0] for c in d.calls]
+        assert run_cli(d, "profile", "load", str(DATA), "--yes", "--ignore-device") == 0
+        assert "warning: the profile is for product" in capsys.readouterr().err
+        assert d.calls[-1][0] == "write"
+
+
 def test_profile_load_reports_a_mismatch(capsys):
     bad = {"written": [{"name": "float_voltage", "requested": 13.5, "old": 13.8, "value": 13.8, "ok": False}]}
     with StubDaemon({"settings": settings(float_voltage=13.8), "write": bad}) as d:

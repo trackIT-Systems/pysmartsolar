@@ -105,11 +105,15 @@ def test_same_uses_the_resolution_of_the_register():
 
 def test_problems():
     p = Profile("p", {"float_voltage": 13.5}, product_id=0xA053, min_firmware=0x163, system_voltage=12)
-    assert profiles.problems(p, product_id=0xA053, firmware=0x164, system_voltage=12) == []
-    assert profiles.problems(p, product_id=None, firmware=None, system_voltage=None) == []  # what the device did not report is not checked
-    assert len(profiles.problems(p, product_id=0xA042, firmware=0x100, system_voltage=24)) == 3
+    assert profiles.problems(p, product_id=0xA053, firmware=0x164, system_voltage=12) == ([], [])
+    assert profiles.problems(p, product_id=None, firmware=None, system_voltage=None) == ([], [])  # what the device did not report is not checked
+    blockers, warnings = profiles.problems(p, product_id=0xA042, firmware=0x100, system_voltage=24)
+    assert len(blockers) == 3 and warnings == []
+    blockers, warnings = profiles.problems(p, product_id=0xA042, firmware=0x100, system_voltage=24, ignore_device=True)
+    assert len(blockers) == 1 and "24 V" in blockers[0] and len(warnings) == 2
+    assert profiles.problems(p, product_id=0xA042, firmware=0x100, system_voltage=12, ignore_device=True)[0] == []
     no_voltage = Profile("p", {"load_output_control": "on"}, system_voltage=12)
-    assert profiles.problems(no_voltage, product_id=None, firmware=None, system_voltage=24) == []  # no voltage setting in it
+    assert profiles.problems(no_voltage, product_id=None, firmware=None, system_voltage=24) == ([], [])  # no voltage setting in it
 
 
 def current(**changes):

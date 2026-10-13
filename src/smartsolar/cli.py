@@ -334,10 +334,20 @@ def cmd_profile_apply(args: argparse.Namespace, socket: Path) -> int:
     """profile diff / profile load: compare with the device, then write what differs and verify."""
     profile = profiles.load_profile(args.file)
     live = live_settings(socket)
-    blockers = profiles.problems(profile, product_id=live.get("product_id"), firmware=live.get("firmware"), system_voltage=live.get("system_voltage"))
+    blockers, warnings = profiles.problems(
+        profile,
+        product_id=live.get("product_id"),
+        firmware=live.get("firmware"),
+        system_voltage=live.get("system_voltage"),
+        ignore_device=args.ignore_device,
+    )
+    for w in warnings:
+        print(f"warning: {w} (ignored)", file=sys.stderr)
     if blockers:
         for b in blockers:
             print(f"error: {b}", file=sys.stderr)
+        if any("product" in b or "firmware" in b for b in blockers):
+            print("hint: --ignore-device loads it anyway; the device still refuses values outside its own ranges", file=sys.stderr)
         return EXIT_USAGE
     changes, notes = profiles.plan(profile, live["values"])
     loading = args.profile_cmd == "load" and not args.dry_run
@@ -450,6 +460,7 @@ def build_parser() -> argparse.ArgumentParser:
     for action, text in (("diff", "show what loading a settings file would change"), ("load", "write a settings file to the device: check, diff, confirm, write, verify")):
         p = psub.add_parser(action, parents=[common], help=text)
         p.add_argument("file", metavar="FILE.vcsf")
+        p.add_argument("--ignore-device", action="store_true", help="do not refuse a profile made for another product id or newer firmware (provisioning)")
         if action == "load":
             p.add_argument("--dry-run", action="store_true", help="only show the differences")
             p.add_argument("--yes", "-y", action="store_true", help="do not ask for confirmation")

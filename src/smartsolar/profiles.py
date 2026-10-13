@@ -107,17 +107,26 @@ def same(name: str, a: Any, b: Any) -> bool:
     return str(a).strip().casefold() == str(b).strip().casefold()
 
 
-def problems(profile: Profile, *, product_id: int | None, firmware: int | None, system_voltage: int | None) -> list[str]:
-    """Why this profile must not be loaded on this device (empty: fine)."""
+def problems(
+    profile: Profile, *, product_id: int | None, firmware: int | None, system_voltage: int | None, ignore_device: bool = False
+) -> tuple[list[str], list[str]]:
+    """Why this profile should not be loaded on this device: (blockers, warnings).
+
+    With ignore_device the product id and firmware mismatches are warnings instead of blockers
+    (provisioning with a profile made for another model); the system voltage always blocks.
+    """
     out = []
+    soft = []
     if profile.product_id and product_id and profile.product_id != product_id:
-        out.append(f"the profile is for product 0x{profile.product_id:X}, the device is 0x{product_id:X}")
+        soft.append(f"the profile is for product 0x{profile.product_id:X}, the device is 0x{product_id:X}")
     if profile.min_firmware and firmware and firmware < profile.min_firmware:
-        out.append(f"the profile needs firmware 0x{profile.min_firmware:X} or newer, the device has 0x{firmware:X}")
+        soft.append(f"the profile needs firmware 0x{profile.min_firmware:X} or newer, the device has 0x{firmware:X}")
+    warnings = soft if ignore_device else []
+    out.extend([] if ignore_device else soft)
     voltage_settings = [n for n in profile.values if WRITABLE[n].check]
     if profile.system_voltage and system_voltage and profile.system_voltage != system_voltage and voltage_settings:
         out.append(f"the profile is for a {profile.system_voltage} V system, the device runs at {system_voltage} V (it sets {', '.join(voltage_settings)})")
-    return out
+    return out, warnings
 
 
 def plan(profile: Profile, current: Iterable[Mapping[str, Any]]) -> tuple[list[Change], list[str]]:
