@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smartsolar"
+authors = [
+  {name = "Jonas Höchst", email = "hoechst@trackit.systems"}
+]
+dynamic = ["version"]
+description = "Daemon and CLI for Victron SmartSolar charge controllers over BLE (Instant Readout and GATT)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "bleak>=0.22",
+    "cbor2",
+    "cryptography",
+    "paho-mqtt>=2",
+    "PyYAML>=6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "dbus-fast",
+]
+
+[project.urls]
+Repository = "https://github.com/trackIT-Systems/pysmartsolar"
+
+[project.scripts]
+smartsolar = "smartsolar.cli:main"
+smartsolard = "smartsolar.daemon:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "smartsolar.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
