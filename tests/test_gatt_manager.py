@@ -92,6 +92,7 @@ def test_poll_mode_publishes_the_decoded_values_and_disconnects():
             assert values["mac_address"] == "f7:48:18:8a:77:9d" and values["battery_temperature"] is None
             assert values["uptime"] == 1000
             assert "vreg_ec65" not in values and TEST_KEY.hex() not in str([v.value for v in reading.values])
+            assert all(not n.startswith("vreg_") for n in values)  # unknown registers are not published
             await until(lambda: rig.backend.links[0].disconnect_calls == 1)
             await until(lambda: len(rig.readings) >= 2)  # the next poll after poll_interval_s
             assert len(rig.backend.links) >= 2 and rig.stats.polls >= 2
@@ -251,5 +252,19 @@ def test_stop_closes_an_open_link():
             await until(lambda: rig.mgr.state is GattState.CONNECTED)
         assert rig.backend.links[0].disconnect_calls == 1 and rig.kinds()[-1] == "disconnected"
         assert rig.events[-1].data["reason"] == "shutdown"
+
+    run(go())
+
+
+def test_unknown_registers_are_only_available_raw():
+    async def go():
+        backend = FakeBackend()
+        backend.values[0xED8C] = bytes.fromhex("d8ffffff")
+        async with Rig("poll", backend=backend) as rig:
+            await until(lambda: rig.readings)
+            assert "vreg_ed8c" not in {v.name for v in rig.readings[0].values}
+            raw = rig.mgr.raw_registers()  # still there after the session closed
+            assert raw["0xed8c"] == "d8ffffff" and raw["0xed8d"] == "3305"
+            assert "0xec65" not in raw and TEST_KEY.hex() not in str(raw)
 
     run(go())

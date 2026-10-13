@@ -223,6 +223,9 @@ def test_poll_mode_serves_gatt_reads_by_connecting():
             assert names["channel_1_voltage"] == 13.31 and len(env.backend.links) == first_links + 1
             cached = await env.call("cached", block="gatt")
             assert cached["blocks"]["gatt"]["enabled"] and cached["blocks"]["gatt"]["values"]
+            raw = await env.call("read", block="gatt", raw=True)
+            assert raw["raw"]["0xed8d"] == "3305" and "0xec65" not in raw["raw"]
+            assert "raw" not in await env.call("read", block="gatt")
             status = await env.call("status")
             assert status["gatt"]["mode"] == "poll" and status["gatt"]["polls"] >= 2 and status["gatt"]["next_poll_in_s"] is not None
             published = [json.loads(p) for p in env.published("json")]

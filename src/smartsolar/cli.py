@@ -137,6 +137,10 @@ def format_read(result: dict[str, Any]) -> str:
     return "\n".join(out).rstrip()
 
 
+def format_raw(raw: dict[str, str]) -> str:
+    return "raw registers (hex)\n" + table([[k, v] for k, v in raw.items()], ["VREG", "VALUE"])
+
+
 def format_scan(scan: dict[str, Any]) -> str:
     if not scan["devices"]:
         return "no Victron devices seen yet"
@@ -230,8 +234,11 @@ def run(args: argparse.Namespace) -> int:
         result = ipc.request(socket, "cached", {"block": args.block})
         return show(result, format_cached(result))
     if args.cmd == "read":
-        result = ipc.request(socket, "read", {"block": args.block})
-        return show(result, format_read(result))
+        result = ipc.request(socket, "read", {"block": args.block, "raw": args.raw})
+        text = format_read(result)
+        if "raw" in result:
+            text += "\n\n" + format_raw(result["raw"])
+        return show(result, text)
     if args.cmd == "reconnect":
         result = ipc.request(socket, "reconnect")
         return show(result, "reconnect requested")
@@ -270,6 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
     cached.add_argument("block", nargs="?", default="all", choices=["all", "advert", "gatt"])
     read = sub.add_parser("read", parents=[common], help="newest advertisement values, and GATT values (hold: now, poll: connects now)")
     read.add_argument("block", nargs="?", default="all", choices=["all", "advert", "gatt"])
+    read.add_argument("--raw", action="store_true", help="also list every register received over GATT as hex, decoded or not")
     sub.add_parser("reconnect", parents=[common], help="drop the GATT connection and connect again")
     sub.add_parser("rescan", parents=[common], help="choose the device again now")
     sub.add_parser("scan", parents=[common], help="Victron devices seen in the advertisements")

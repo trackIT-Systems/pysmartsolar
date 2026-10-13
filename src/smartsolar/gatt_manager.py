@@ -29,7 +29,7 @@ from smartsolar.errors import ConnectError, NoDataError, NotConnectedError, Smar
 from smartsolar.gatt_session import GattSession
 from smartsolar.reading import Event, Reading
 from smartsolar.state import GattStats
-from smartsolar.vreg import decode_vreg
+from smartsolar.vreg import VREG_KEY, VREGS, decode_vreg
 
 log = logging.getLogger(__name__)
 
@@ -109,6 +109,7 @@ class GattManager:
         self.last_poll: datetime | None = None
         self.next_poll_mono: float | None = None
         self.last_key_fetch: datetime | None = None
+        self._last_raw: dict[str, str] = {}
 
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
@@ -158,16 +159,31 @@ class GattManager:
         self._wake.set()
 
     def snapshot(self) -> Reading | None:
-        """The values the connected device has sent so far."""
+        """The known registers the connected device has sent so far (unknown ones are only in ``raw_registers``)."""
         session, device = self.session, self.device
         if session is None or device is None or not session.values:
             return None
+        self._last_raw = self._raw(session)
         values = []
         for vreg in sorted(session.values):
-            value = decode_vreg(vreg, session.values[vreg])
+            value = decode_vreg(vreg, session.values[vreg]) if vreg in VREGS else None
             if value is not None:
                 values.append(value)
         return Reading(device.address, "gatt", datetime.now().astimezone(), tuple(values))
+
+    @staticmethod
+    def _raw(session: GattSession) -> dict[str, str]:
+        raw = {}
+        for vreg in sorted(session.values):
+            if vreg == VREG_KEY:
+                continue  # a secret
+            value = session.values[vreg]
+            raw[f"0x{vreg:04x}"] = value.hex() if isinstance(value, (bytes, bytearray)) else str(value)
+        return raw
+
+    def raw_registers(self) -> dict[str, str]:
+        """Every register received, known or not, as hex (the key excluded). From the last session if none is open."""
+        return self._raw(self.session) if self.session is not None else dict(self._last_raw)
 
     # -- main loop ----------------------------------------------------------
 

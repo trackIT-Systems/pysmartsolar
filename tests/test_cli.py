@@ -180,9 +180,19 @@ def test_cached_read_and_the_block_argument(capsys):
         assert run_cli(d, "cached", "advert") == 0
         assert d.calls[-1] == ("cached", {"block": "advert"}) and "advert (5s old)" in capsys.readouterr().out
         assert run_cli(d, "read") == 0
-        assert d.calls[-1] == ("read", {"block": "all"}) and "advert (live)" in capsys.readouterr().out
+        assert d.calls[-1] == ("read", {"block": "all", "raw": False}) and "advert (live)" in capsys.readouterr().out
         with pytest.raises(SystemExit):
             run_cli(d, "read", "status")  # not a block
+
+
+def test_read_raw_lists_the_registers(capsys):
+    live = {"device": "AA", "blocks": {"gatt": {"time": "t", "values": [VALUE]}}, "raw": {"0xed8d": "3305", "0x0093": "1027"}}
+    with StubDaemon({"read": live}) as d:
+        assert run_cli(d, "read", "gatt", "--raw") == 0
+        assert d.calls[-1] == ("read", {"block": "gatt", "raw": True})
+        out = capsys.readouterr().out
+        assert "raw registers (hex)" in out and "0xed8d  3305" in out
+        assert run_cli(d, "read", "gatt") == 0 and d.calls[-1][1]["raw"] is False
 
 
 def test_scan_rescan_reconnect_and_fetch_key(capsys):

@@ -350,7 +350,10 @@ class Daemon:
                 if len(names) == 1:
                     raise
                 blocks[name] = {"error": str(exc)}
-        return {"device": self.tracker.current_address, "blocks": blocks}
+        result: dict[str, Any] = {"device": self.tracker.current_address, "blocks": blocks}
+        if args.get("raw") and "gatt" in names and "values" in blocks.get("gatt", {}):
+            result["raw"] = self.gatt.raw_registers()
+        return result
 
     async def _cmd_reconnect(self, args: dict[str, Any]) -> dict[str, Any]:
         if self.config.gatt.mode == "off":
