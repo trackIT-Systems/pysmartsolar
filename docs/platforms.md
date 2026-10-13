@@ -12,6 +12,8 @@
 | Control socket | Unix socket | Unix socket | `tcp://127.0.0.1:47821` |
 | Default paths | `/boot/firmware`, `/var/lib/smartsolar`, `/run/smartsolar`, `/data` | `~/Library/Application Support/smartsolar` | `%PROGRAMDATA%\smartsolar` |
 
+An example config for macOS with the paths and notes below is [config/smartsolar.macos.yml](../config/smartsolar.macos.yml). `~` is expanded in `daemon.socket`, `daemon.state_dir` and `daemon.csv.path`.
+
 ## Bluetooth
 
 * **Pairing.** Only BlueZ lets a program answer the passkey request, so the D-Bus agent (`smartsolar.ble.agent`, `dbus-fast`) exists on Linux only. On Windows the library asks the system to pair and Windows shows its dialog; on macOS CoreBluetooth cannot be told to pair at all, the system asks the first time an encrypted characteristic is used. In both cases `gatt.passkey` is not used: type the passkey (default `000000`) in the system dialog. The key fetch (`fetch-key`) therefore needs somebody at the machine once.

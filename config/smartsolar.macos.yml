@@ -1,0 +1,78 @@
+# smartsolard configuration for macOS (see docs/platforms.md). Copy it to
+#   ~/Library/Application Support/smartsolar/smartsolar.yml
+# (the default place) or pass it with --config. "~" is expanded.
+#
+# Differences to the Linux example (config/smartsolar.yml):
+#  * No MAC addresses on macOS: name the device by its serial number (the last word of the
+#    Bluetooth name, "SmartSolar HQ22294ZGEU"), in ble.address and in keys.
+#  * No BlueZ: there is no pairing agent. The first GATT use of an encrypted characteristic (the
+#    key fetch, hold/poll, settings over Bluetooth) makes macOS show its own pairing dialog; enter
+#    the passkey there (Victron default 000000). gatt.passkey and ble.adapter are not used.
+#  * Everything lives under ~/Library/Application Support/smartsolar instead of /boot, /var, /run.
+#  * The first start asks for Bluetooth permission for the terminal or app that runs the daemon
+#    (System Settings > Privacy & Security > Bluetooth).
+
+ble:
+  enabled: true                  # false: no Bluetooth at all (only the VE.Direct cable)
+  address: "HQ22294ZGEU"         # your charger's serial number; leave it out to follow the strongest SmartSolar
+  select_window_s: 10
+  rescan_interval_s: 3600
+  switch_hysteresis_db: 10
+
+advert:
+  # The Instant Readout advertisements are the main data source (no connection, no pairing).
+  publish_interval_s: 60
+  stale_after_s: 120
+
+gatt:
+  # off:  no connection, except once to fetch the Instant Readout key if none is configured below
+  # hold: keep a GATT connection and publish the values the device pushes
+  # poll: connect every poll_interval_s, collect the values, disconnect
+  # Unlike on the Raspberry Pi there is no Wi-Fi/Bluetooth coexistence problem on a Mac, so hold
+  # and poll are worth trying.
+  mode: "off"
+  poll_interval_s: 900
+  collect_s: 15
+  keepalive_s: 5
+  connect_timeout_s: 30
+  pair_timeout_s: 60             # long enough to type the passkey into the macOS dialog
+  request_timeout_s: 10
+  backoff_initial_s: 5
+  backoff_max_s: 300
+  publish_interval_s: 60         # hold mode
+
+serial:
+  # A VE.Direct USB cable shows up as /dev/cu.usbserial-<id> (ls /dev/cu.usb*). With it the daemon
+  # also reads and writes settings without Bluetooth (smartsolar write / profile load).
+  enabled: false
+  port: /dev/cu.usbserial-XXXXXXXX
+  baud: 19200
+  publish_interval_s: 60
+  stale_after_s: 10
+  hex: true                      # false: read only, the daemon never sends a byte
+  request_timeout_s: 2
+  reopen_initial_s: 2
+  reopen_max_s: 60
+
+keys:
+  # Instant Readout key of the device, by serial number (VictronConnect: device > settings >
+  # Product info > Instant readout via Bluetooth). Without it the daemon fetches it once over GATT
+  # (macOS asks for pairing) and stores it in daemon.state_dir. This file is a secret.
+  # "HQ22294ZGEU": "00112233445566778899aabbccddeeff"
+
+daemon:
+  socket: ~/Library/Application Support/smartsolar/smartsolar.sock
+  socket_mode: "0600"            # only you
+  state_dir: ~/Library/Application Support/smartsolar   # fetched keys
+  registers: auto
+  log_level: INFO
+  csv:
+    enabled: true
+    path: ~/Library/Application Support/smartsolar/data
+  mqtt:
+    enabled: false               # set true when a broker is running (brew install mosquitto)
+    host: localhost
+    port: 1883
+    qos: 0
+    json: true
+    cbor: true

@@ -151,3 +151,20 @@ def test_devices_can_be_named_by_mac_serial_or_uuid():
     assert set(config.keys) == {"HQ22294ZGEU", uuid, "F7:48:18:8A:77:9D"} and config.ble.address == "HQ22294ZGEU"
     with pytest.raises(ConfigError, match="serial number"):
         parse_config({"ble": {"address": "kitchen"}})
+
+
+def test_the_macos_example_config_is_valid_and_has_the_macos_paths(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    example = Path(__file__).parents[1] / "config" / "smartsolar.macos.yml"
+    config = load_config(example)
+    base = tmp_path / "Library" / "Application Support" / "smartsolar"
+    assert config.daemon.socket == base / "smartsolar.sock" and config.daemon.state_dir == base and config.daemon.csv.path == base / "data"
+    assert config.ble.address == "HQ22294ZGEU" and config.gatt.mode == "off" and not config.daemon.mqtt.enabled
+    assert config.serial.port.startswith("/dev/cu.usbserial") and not config.serial.enabled and config.gatt.pair_timeout_s == 60
+
+
+def test_paths_in_the_config_expand_the_home_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    config = parse_config({"daemon": {"socket": "~/s.sock", "state_dir": "~/state", "csv": {"path": "~/data"}}})
+    assert config.daemon.socket == tmp_path / "s.sock" and config.daemon.state_dir == tmp_path / "state" and config.daemon.csv.path == tmp_path / "data"

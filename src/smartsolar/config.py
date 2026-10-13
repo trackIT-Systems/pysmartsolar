@@ -305,7 +305,7 @@ def _parse_socket(value: Any) -> Path | str:
 
         parse_endpoint(text)  # raises ConfigError for a bad or non-loopback address
         return text
-    return Path(text)
+    return Path(text).expanduser()
 
 
 def _parse_mode(value: Any) -> int:
@@ -339,12 +339,12 @@ def _parse_daemon(raw: dict[str, Any]) -> DaemonConfig:
     return DaemonConfig(
         socket=_parse_socket(_str(raw, "socket", str(d.socket), "daemon") or d.socket),
         socket_mode=_parse_mode(raw.get("socket_mode", d.socket_mode)),
-        state_dir=Path(_str(raw, "state_dir", str(d.state_dir), "daemon") or d.state_dir),
+        state_dir=Path(_str(raw, "state_dir", str(d.state_dir), "daemon") or d.state_dir).expanduser(),
         registers=registers,
         log_level=level,
         csv=CsvConfig(
             enabled=_bool(csv_raw, "enabled", True, "daemon.csv"),
-            path=Path(_str(csv_raw, "path", str(CsvConfig().path), "daemon.csv") or CsvConfig().path),
+            path=Path(_str(csv_raw, "path", str(CsvConfig().path), "daemon.csv") or CsvConfig().path).expanduser(),
         ),
         mqtt=MqttConfig(
             enabled=_bool(mqtt_raw, "enabled", md.enabled, "daemon.mqtt"),
