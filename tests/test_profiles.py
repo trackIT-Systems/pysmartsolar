@@ -8,11 +8,12 @@ CURRENT = [
     {"name": "float_voltage", "value": 13.5, "unit": "V"},
     {"name": "absorption_voltage", "value": 14.5, "unit": "V"},
     {"name": "battery_max_current", "value": 15.0, "unit": "A"},
+    {"name": "load_output_control", "value": "conventional1", "unit": ""},
 ]
 
 
-def test_the_profile_settings_are_the_numeric_writable_registers_only():
-    assert profiles.PROFILE_PARAMETERS == ("float_voltage", "absorption_voltage", "battery_max_current")  # not device_mode, not the load
+def test_the_profile_settings_are_the_charge_settings_and_the_load_algorithm():
+    assert profiles.PROFILE_PARAMETERS == ("load_output_control", "float_voltage", "absorption_voltage", "battery_max_current")  # not device_mode
 
 
 def test_parse_normalises_values():
@@ -24,7 +25,6 @@ def test_parse_normalises_values():
     "text, message",
     [
         ("values:\n  device_mode: off\n", "not a profile setting"),  # a profile never switches the charger
-        ("values:\n  load_output_control: off\n", "not a profile setting"),
         ("values:\n  battery_voltage: 12\n", "not a profile setting"),
         ("values: {}\n", "non-empty"),
         ("name: x\n", "non-empty"),
@@ -53,7 +53,7 @@ def test_save_and_load_round_trip(tmp_path):
     path.write_text(text, encoding="utf-8")
     loaded = profiles.load_profile(str(path))
     assert (loaded.name, loaded.description, loaded.values) == ("mine", "test", p.values)
-    assert p.values == {"float_voltage": 13.5, "absorption_voltage": 14.5, "battery_max_current": 15.0}
+    assert p.values == {"load_output_control": "conventional1", "float_voltage": 13.5, "absorption_voltage": 14.5, "battery_max_current": 15.0}
 
 
 def test_profile_from_values_ignores_other_registers_and_missing_ones():
@@ -88,12 +88,34 @@ MANUAL = {
 
 def test_the_premade_profiles_match_the_manual_for_12_and_24_volt():
     premade = {p.name: p for p in profiles.list_premade()}
-    assert set(premade) == {f"{stem}-{v}v" for stem in MANUAL for v in (12, 24)}
+    assert set(premade) == {f"{stem}-{v}v" for stem in MANUAL for v in (12, 24)} | set(LOAD_PROFILES)
     for stem, (absorb, flt) in MANUAL.items():
         for volts, k in ((12, 1), (24, 2)):
             p = premade[f"{stem}-{volts}v"]
             assert p.values == {"absorption_voltage": round(absorb * k, 2), "float_voltage": round(flt * k, 2)}, p.name
             assert p.description and f"{volts} V" in p.description
+
+
+LOAD_PROFILES = {
+    "load-batterylife": "batterylife",
+    "load-conventional1": "conventional1",
+    "load-conventional2": "conventional2",
+    "load-always-on": "on",
+    "load-always-off": "off",
+}
+
+
+def test_the_load_profiles_only_set_the_load_algorithm():
+    premade = {p.name: p for p in profiles.list_premade()}
+    for name, mode in LOAD_PROFILES.items():
+        assert premade[name].values == {"load_output_control": mode} and premade[name].description.startswith("Load output")
+
+
+def test_load_modes_can_be_diffed_and_spelled_the_old_way():
+    p = profiles.parse_profile("values:\n  load_output_control: ALT2\n")
+    assert p.values == {"load_output_control": "conventional2"}
+    assert [(c.name, c.old, c.new) for c in profiles.diff(p, CURRENT)] == [("load_output_control", "conventional1", "conventional2")]
+    assert profiles.diff(profiles.parse_profile("values:\n  load_output_control: Conventional1\n"), CURRENT) == []
 
 
 def test_diff_lists_differences_in_register_order_and_tolerates_noise():

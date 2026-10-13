@@ -31,7 +31,8 @@ from smartsolar.reading import Event, Reading, local_iso, utc_iso
 from smartsolar.server import ControlServer
 from smartsolar.state import BLOCKS, AdvertStats, Cache, GattStats
 from smartsolar.tracker import DeviceTracker
-from smartsolar.vreg import VREGS, WRITABLE, build_write, decode_vreg
+from smartsolar.profiles import PROFILE_PARAMETERS
+from smartsolar.vreg import WRITABLE, build_write, decode_vreg
 
 log = logging.getLogger("smartsolard")
 
@@ -387,7 +388,7 @@ class Daemon:
         """The current value of every writable register, read live (connects on demand)."""
         if self.tracker.current_address is None:
             raise NoDataError("no device selected yet")
-        names = args.get("names") or [n for n, w in WRITABLE.items() if w.values is None]
+        names = args.get("names") or list(PROFILE_PARAMETERS)
         unknown = [n for n in names if n not in WRITABLE]
         if unknown:
             raise BadRequest(f"not a writable register: {', '.join(map(str, unknown))}")

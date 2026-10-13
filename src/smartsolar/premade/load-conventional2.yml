@@ -1,0 +1,5 @@
+name: load-conventional2
+description: 'Load output: Conventional algorithm 2, off below 11.8 V, on above 14.0 V (24 V: 23.6 / 28.0,
+  48 V: 47.4 / 56.0)'
+values:
+  load_output_control: conventional2

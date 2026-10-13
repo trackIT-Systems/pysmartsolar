@@ -276,7 +276,7 @@ def test_poll_mode_publishes_the_registers_read_after_the_init_sequence():
             await until(lambda: rig.readings)
             values = {v.name: v.value for v in rig.readings[0].values}
             assert values["battery_voltage"] == 13.31 and values["device_mode"] == "on" and values["device_state"] == "off"
-            assert values["load_output_control"] == "alt1" and values["float_voltage"] == 13.5 and values["battery_max_current"] == 15.0
+            assert values["load_output_control"] == "conventional1" and values["float_voltage"] == 13.5 and values["battery_max_current"] == 15.0
             assert values["yield_total"] == 98.47 and values["charger_temperature"] == 28.8 and values["charger_error"] == "none"
 
     run(go())
@@ -313,7 +313,7 @@ def test_a_write_in_hold_mode_uses_the_open_link():
         async with Rig("hold") as rig:
             await until(lambda: rig.mgr.state is GattState.CONNECTED)
             (result,) = await asyncio.wait_for(rig.mgr.request_write(build_write({"load_output_control": "off"})), 3.0)
-            assert result["old"] == "alt1" and result["value"] == "off" and result["ok"]
+            assert result["old"] == "conventional1" and result["value"] == "off" and result["ok"]
             assert len(rig.backend.links) == 1 and rig.backend.links[0].is_connected
             await until(lambda: any({v.name: v.value for v in r.values}.get("load_output_control") == "off" for r in rig.readings))
 

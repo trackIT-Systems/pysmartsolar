@@ -216,7 +216,8 @@ def _enum(names: dict[int, str]) -> Callable[[Any], Any]:
 
 
 DEVICE_MODES = {1: "on", 4: "off", 5: "eco"}
-LOAD_CONTROLS = {0: "off", 1: "auto", 2: "alt1", 3: "alt2", 4: "on", 5: "user1", 6: "user2"}
+LOAD_CONTROLS = {0: "off", 1: "batterylife", 2: "conventional1", 3: "conventional2", 4: "on", 5: "user1", 6: "user2", 7: "aes"}
+LOAD_CONTROL_ALIASES = {"alt1": "conventional1", "alt2": "conventional2", "always-on": "on", "always-off": "off"}
 
 
 def _state(raw: Any) -> Any:
@@ -317,6 +318,7 @@ class Writable:
     width: int  # bytes, little endian
     unit: str = ""
     values: dict[str, int] | None = None  # named values; None: a number
+    aliases: dict[str, str] | None = None  # other spellings of the named values
     scale: float = 1.0  # raw = value / scale
     minimum: float = 0.0
     maximum: float = 0.0
@@ -325,6 +327,7 @@ class Writable:
         """The bytes to send and the value as it will be read back."""
         if self.values is not None:
             key = str(value).strip().lower()
+            key = (self.aliases or {}).get(key, key)
             if key not in self.values:
                 raise InvalidWriteError(f"{self.name}: {value!r} is not one of {', '.join(self.values)}")
             return self.values[key].to_bytes(self.width, "little"), key
@@ -342,7 +345,14 @@ WRITABLE: dict[str, Writable] = {
     w.name: w
     for w in (
         Writable("device_mode", 0x0200, "Charger on or off", 1, values={"on": 1, "off": 4}),
-        Writable("load_output_control", 0xEDAB, "Load output: off, on, or alt1 (the mode the device was found in)", 1, values={"off": 0, "alt1": 2, "on": 4}),
+        Writable(
+            "load_output_control",
+            0xEDAB,
+            "Load output algorithm: off, batterylife, conventional1 (off < 11.1 V, on > 13.1 V), conventional2 (11.8 / 14.0 V), on, user1, user2, aes (voltages for 12 V)",
+            1,
+            values={v: k for k, v in LOAD_CONTROLS.items()},
+            aliases=LOAD_CONTROL_ALIASES,
+        ),
         Writable("float_voltage", 0xEDF6, "Float charge voltage", 2, "V", scale=0.01, minimum=5.0, maximum=70.0),
         Writable("absorption_voltage", 0xEDF7, "Absorption charge voltage", 2, "V", scale=0.01, minimum=5.0, maximum=70.0),
         Writable("battery_max_current", 0xEDF0, "Battery maximum charge current", 2, "A", scale=0.1, minimum=0.0, maximum=100.0),

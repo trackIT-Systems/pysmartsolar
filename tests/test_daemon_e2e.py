@@ -372,8 +372,8 @@ def test_settings_command_reads_the_writable_values_live():
             assert err.value.type == "no_data"
             await env.select()
             result = await env.call("settings")
-            assert {v["name"]: v["value"] for v in result["values"]} == {"float_voltage": 13.5, "absorption_voltage": 14.5, "battery_max_current": 15.0}
-            assert all(v["unit"] for v in result["values"])
+            assert {v["name"]: v["value"] for v in result["values"]} == {"float_voltage": 13.5, "absorption_voltage": 14.5, "battery_max_current": 15.0, "load_output_control": "conventional1"}
+            assert all(v["unit"] for v in result["values"] if v["name"] != "load_output_control")
             with pytest.raises(DaemonError) as err:
                 await env.call("settings", names=["battery_voltage"])
             assert err.value.type == "bad_request"
@@ -406,5 +406,12 @@ def test_profile_save_load_and_restore_through_the_cli(tmp_path, capsys):
 
             assert await cli_run("load", str(before), "--yes") == 0  # restore
             assert env.backend.registers[0xEDF7] == bytes.fromhex("aa05")
+
+            # a load profile changes only the load output algorithm
+            assert env.backend.registers[0xEDAB] == b"\x02"
+            assert await cli_run("load", "load-conventional2", "--yes") == 0
+            assert env.backend.registers[0xEDAB] == b"\x03" and env.backend.registers[0xEDF6] == bytes.fromhex("4605")
+            assert await cli_run("load", str(before), "--yes") == 0
+            assert env.backend.registers[0xEDAB] == b"\x02"  # the saved file restores the load mode too
 
     run(go())

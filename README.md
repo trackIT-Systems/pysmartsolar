@@ -73,7 +73,7 @@ smartsolar vregs [--writable]      the registers decoded over GATT, or the ones 
 | Name | Register | Values |
 | --- | --- | --- |
 | `device_mode` | `0x0200` | `on`, `off` (the charger) |
-| `load_output_control` | `0xEDAB` | `off`, `on`, `alt1` |
+| `load_output_control` | `0xEDAB` | `off`, `batterylife`, `conventional1`, `conventional2`, `on`, `user1`, `user2`, `aes` (the load output algorithm; `alt1` and `alt2` are accepted as old names) |
 | `float_voltage` | `0xEDF6` | 5..70 V |
 | `absorption_voltage` | `0xEDF7` | 5..70 V |
 | `battery_max_current` | `0xEDF0` | 0..100 A |
@@ -85,7 +85,7 @@ smartsolar write float_voltage=13.6 absorption_voltage=14.4 --yes
 
 It asks for confirmation on a terminal (`--yes` skips it, and is required without one). Every write is checked twice: the device must echo the value, and a read-back must show it. A write the device does not accept gets **no answer at all**, which is reported as a failure. The old and the new value are shown, and every write is logged as a `register_written` event (CSV and MQTT). Exit code 1 if a write failed or the read-back differs.
 
-Notes: `load_output_control` `alt1` is the mode the test device was found in; after switching the load off, going back to `alt1` alone did not switch it on again, `on` then `alt1` did. The ranges of the voltages and the current are only plausibility bounds; the device decides what it accepts, and the real limits depend on the system voltage. Whether `device_mode=off` stops charging was only seen as the register value (the test happened at night).
+Notes: `load_output_control` is the load output algorithm of the VictronConnect load output settings: `batterylife` is the self-adapting default, `conventional1` switches off below 11.1 V and on above 13.1 V, `conventional2` below 11.8 V and above 14.0 V (12 V system; multiplied for 24 V and 48 V), `on` and `off` are always on and always off, and `user1`, `user2` and `aes` (Automatic Energy Selector) use user-defined voltage thresholds, which `smartsolar` can not set. Every value 0 to 7 was accepted, echoed and read back on a SmartSolar 75/15. Except for `on` and `off`, the load output follows an algorithm only after a 2-minute delay: the test device was found in `conventional1` with the load on, and after switching the load off, writing `conventional1` again needed those two minutes (not the 20 s I waited) to switch it on. The ranges of the voltages and the current are only plausibility bounds; the device decides what it accepts, and the real limits depend on the system voltage. Whether `device_mode=off` stops charging was only seen as the register value (the test happened at night).
 
 Not exposed on purpose: battery type (it may reset other settings), restore-defaults and clear commands, and anything that could lock the device out. Other registers can be added to `WRITABLE` in `src/smartsolar/vreg.py` once their behaviour is known.
 
@@ -93,7 +93,7 @@ Open: the registers for battery current, yield and panel power are decoded but o
 
 ## Profiles
 
-A profile is a YAML file with a set of charge settings (`absorption_voltage`, `float_voltage`, `battery_max_current`); it never contains the charger mode or the load output. Profiles of the battery types in Victron's charge algorithm table are built in, for 12 V and 24 V systems:
+A profile is a YAML file with a set of charge settings (`absorption_voltage`, `float_voltage`, `battery_max_current`) and the load output algorithm (`load_output_control`). It never contains the charger on/off (`device_mode`); a partial profile only changes what it lists. Profiles of the battery types in Victron's charge algorithm table are built in, for 12 V and 24 V systems:
 
 ```
 smartsolar profile list                      the built-in profiles with their voltages
@@ -115,7 +115,7 @@ smartsolar profile load before.yml -y        restore
 | `pzs-tubular-3-12v` | 15.3 / 13.8 V | PzS tubular plate traction or OPzS (6) |
 | `lifepo4-12v` | 14.2 / 13.5 V | Lithium iron phosphate (7) |
 
-The values are from the "battery charge algorithm" table in Victron's MPPT manual (BlueSolar MPPT 100/30 and 100/50, which uses the same charge algorithms as the SmartSolar). **They are not the presets of the VictronConnect app:** the app's list for the SmartSolar was not available when this was written, so check the voltages against your battery's datasheet and the manual of your model. A profile only sets the absorption and float voltage (and the current, if the file has it). The presets also define the equalization voltage, the temperature compensation and the low-voltage limits, which `smartsolar` can not write; the device reports `battery_type` 255 (user defined) either way. `profile load` compares with the live values first, asks for confirmation (`--yes` skips it) and verifies by reading back; `--dry-run` only shows the differences.
+The values are from the "battery charge algorithm" table in Victron's MPPT manual (BlueSolar MPPT 100/30 and 100/50, which uses the same charge algorithms as the SmartSolar). **They are not the presets of the VictronConnect app:** the app's list for the SmartSolar was not available when this was written, so check the voltages against your battery's datasheet and the manual of your model. The battery profiles only set the absorption and float voltage. The presets also define the equalization voltage, the temperature compensation and the low-voltage limits, which `smartsolar` can not write; the device reports `battery_type` 255 (user defined) either way. Five more premade profiles set only the load output algorithm: `load-batterylife`, `load-conventional1`, `load-conventional2`, `load-always-on` and `load-always-off`. `profile load` compares with the live values first, asks for confirmation (`--yes` skips it) and verifies by reading back; `--dry-run` only shows the differences.
 
 ## GATT protocol
 

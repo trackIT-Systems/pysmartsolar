@@ -122,8 +122,10 @@ def test_parse_requests_round_trips():
 
 
 def test_build_write_encodes_like_the_captured_writes():
-    (item,) = build_write({"load_output_control": "alt1"})
-    assert (item.vreg, item.raw, item.value) == (0xEDAB, b"\x02", "alt1")
+    (item,) = build_write({"load_output_control": "conventional1"})
+    assert (item.vreg, item.raw, item.value) == (0xEDAB, b"\x02", "conventional1")
+    assert build_write({"load_output_control": "alt1"})[0].value == "conventional1"  # the old name
+    assert [build_write({"load_output_control": m})[0].raw[0] for m in ("off", "batterylife", "conventional1", "conventional2", "on", "user1", "user2", "aes")] == list(range(8))
     assert build_write({"load_output_control": " ON "})[0].raw == b"\x04" and build_write({"device_mode": "off"})[0].raw == b"\x04"
     float_item = build_write({"float_voltage": "13.51"})[0]
     assert float_item.raw == bytes.fromhex("4705") and float_item.value == 13.51  # 1351 = 0x0547
@@ -140,7 +142,7 @@ def test_build_write_keeps_the_order_and_handles_several_registers():
     [
         ({}, "nothing to write"),
         ({"device_mode": "sleep"}, "is not one of on, off"),
-        ({"load_output_control": "auto"}, "is not one of off, alt1, on"),  # not verified on a device: refused
+        ({"load_output_control": "auto"}, "is not one of off, batterylife, conventional1"),
         ({"battery_voltage": 12}, "read-only"),
         ({"key": "x"}, "unknown register"),
         ({"vreg_ec65": "00"}, "unknown register"),
@@ -166,7 +168,7 @@ def test_the_new_registers_decode_with_the_values_seen_on_the_device():
     assert decode_vreg(0xEDDA, b"\x00").value == "none" and decode_vreg(0xEDDA, b"\x02").value == "battery voltage too high"
     assert decode_vreg(0xEDD5, bytes.fromhex("3305")).value == 13.31
     assert decode_vreg(0xEDBB, bytes.fromhex("0300")).value == 0.03
-    assert decode_vreg(0xEDAB, b"\x02").value == "alt1" and decode_vreg(0xEDAB, b"\x00").value == "off" and decode_vreg(0xEDAB, b"\x09").value == "unknown (9)"
+    assert decode_vreg(0xEDAB, b"\x02").value == "conventional1" and decode_vreg(0xEDAB, b"\x00").value == "off" and decode_vreg(0xEDAB, b"\x09").value == "unknown (9)"
     assert decode_vreg(0xEDF6, bytes.fromhex("4605")).value == 13.5 and decode_vreg(0xEDF7, bytes.fromhex("aa05")).value == 14.5
     assert decode_vreg(0xEDF0, bytes.fromhex("9600")).value == 15.0
     assert decode_vreg(0xEDDB, bytes.fromhex("400b")).value == 28.8

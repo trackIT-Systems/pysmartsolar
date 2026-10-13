@@ -307,7 +307,7 @@ def test_write_errors_from_the_daemon(capsys):
 def test_vregs_writable_lists_the_allowed_values(capsys):
     assert cli.main(["vregs", "--writable"]) == 0
     out = capsys.readouterr().out
-    assert "device_mode" in out and "on, off" in out and "float_voltage" in out and "5..70" in out
+    assert "device_mode" in out and "on, off" in out and "conventional1" in out and "float_voltage" in out and "5..70" in out
     assert cli.main(["vregs", "--writable", "--json"]) == 0
     assert {r["name"] for r in json.loads(capsys.readouterr().out)} >= {"device_mode", "load_output_control"}
 
@@ -338,6 +338,7 @@ SETTINGS = {"device": "AA", "values": [
     {"name": "float_voltage", "friendly": "Float voltage", "unit": "V", "value": 13.5},
     {"name": "absorption_voltage", "friendly": "Absorption voltage", "unit": "V", "value": 14.5},
     {"name": "battery_max_current", "friendly": "Battery maximum current", "unit": "A", "value": 15.0},
+    {"name": "load_output_control", "friendly": "Load output control", "unit": "", "value": "conventional1"},
 ]}
 
 
@@ -351,7 +352,7 @@ def write_profile(path, **values):
 def test_profile_list_and_show_work_offline(capsys, tmp_path):
     assert cli.main(["--socket", str(tmp_path / "none.sock"), "profile", "list"]) == 0
     out = capsys.readouterr().out
-    assert "lifepo4-12v" in out and "absorption_voltage=14.2" in out
+    assert "lifepo4-12v" in out and "absorption_voltage=14.2" in out and "load_output_control=conventional2" in out
     assert cli.main(["profile", "show", "lifepo4-24v", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["values"] == {"absorption_voltage": 28.4, "float_voltage": 27.0}
     assert cli.main(["profile", "show", "nope"]) == 2 and "no premade profile" in capsys.readouterr().err

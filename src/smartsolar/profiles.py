@@ -1,7 +1,7 @@
 """Settings profiles: named sets of charge settings that can be saved and loaded.
 
-A profile covers the numeric writable registers (float and absorption voltage, maximum charge
-current). Values are validated with the same rules as ``smartsolar write``. This module has no
+A profile covers the charge settings (float and absorption voltage, maximum charge current)
+and the load output algorithm. Values are validated with the same rules as ``smartsolar write``. This module has no
 BLE or daemon dependency.
 """
 
@@ -20,9 +20,9 @@ from smartsolar import __version__
 from smartsolar.errors import ProfileError
 from smartsolar.vreg import WRITABLE, build_write
 
-# The settings a profile may contain. The operating states (device mode, load output) are not
-# part of it: loading a profile must not switch the charger or the load.
-PROFILE_PARAMETERS: tuple[str, ...] = tuple(name for name, w in WRITABLE.items() if w.values is None)
+# The settings a profile may contain: the charge settings and the load output algorithm. The
+# charger on/off (device mode) is not part of it: loading a profile must not switch the charger.
+PROFILE_PARAMETERS: tuple[str, ...] = tuple(name for name in WRITABLE if name != "device_mode")
 FLOAT_TOLERANCE = 0.005
 
 
