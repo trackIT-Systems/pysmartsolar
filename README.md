@@ -4,7 +4,7 @@
 
 A daemon and a CLI for Victron SmartSolar charge controllers over Bluetooth Low Energy, for autonomous sensor nodes (Raspberry Pi). `smartsolard` follows one SmartSolar permanently and reports its values to a CSV file and to MQTT (JSON and CBOR). `smartsolar` talks to the running daemon: cached and live values, key, reconnect, scan.
 
-> **Caution:** the GATT part of this project is based on reverse engineering. It reads values only and **does not write to the device** (writing is not implemented, see below).
+> **Caution:** the GATT part of this project is based on reverse engineering. Writing is limited to a short list of registers (see [Writing](#writing)); use it only if you understand the effect.
 
 ## Why advertisements, and GATT only on top
 
@@ -57,22 +57,42 @@ smartsolar read [advert|gatt]      newest advertisement values; GATT: hold = now
 smartsolar scan                    Victron devices seen, with model, record type and key state
 smartsolar rescan                  choose the device again now
 smartsolar reconnect               drop the GATT connection and connect again
+smartsolar write NAME=VALUE ...    change a register over GATT (see Writing)
 smartsolar fetch-key [--show]      read the Instant Readout key over GATT now
 smartsolar decode --key HEX DATA   decode one advertisement offline
-smartsolar vregs                   the registers decoded over GATT
+smartsolar vregs [--writable]      the registers decoded over GATT, or the ones `write` can change
 ```
 
 `--json` prints the raw result, `--socket` / `--config` select the daemon. Exit codes: 0 ok, 1 daemon error, 2 usage error, 3 daemon unreachable. The CLI and the daemon talk newline-delimited JSON over a Unix socket (`daemon.socket`).
 
-## Not implemented
+## Writing
 
-**Writing to the device is not implemented** (`smartsolar write` says so). The GATT protocol has a set request (kind `0x06`, used for the keepalive), but which registers can be written and how, and what a write does to the device, is not known. It stays open.
+`smartsolar write NAME=VALUE ...` changes registers over GATT, through the daemon (it connects on demand in `off` and `poll` mode and uses the open link in `hold`). Only these registers can be written; everything else, including the key, the passkey and the keepalive, is refused before anything is sent:
 
-Also open: registers for battery current, yield, panel voltage/power and charger state over GATT did not answer in the tests (the advertisements carry those values anyway), and only night values were verified so far (PV power, yield, charger state need a daytime check).
+| Name | Register | Values |
+| --- | --- | --- |
+| `device_mode` | `0x0200` | `on`, `off` (the charger) |
+| `load_output_control` | `0xEDAB` | `off`, `on`, `alt1` |
+| `float_voltage` | `0xEDF6` | 5..70 V |
+| `absorption_voltage` | `0xEDF7` | 5..70 V |
+| `battery_max_current` | `0xEDF0` | 0..100 A |
+
+```
+smartsolar write device_mode=off
+smartsolar write float_voltage=13.6 absorption_voltage=14.4 --yes
+```
+
+It asks for confirmation on a terminal (`--yes` skips it, and is required without one). Every write is checked twice: the device must echo the value, and a read-back must show it. A write the device does not accept gets **no answer at all**, which is reported as a failure. The old and the new value are shown, and every write is logged as a `register_written` event (CSV and MQTT). Exit code 1 if a write failed or the read-back differs.
+
+Notes: `load_output_control` `alt1` is the mode the test device was found in; after switching the load off, going back to `alt1` alone did not switch it on again, `on` then `alt1` did. The ranges of the voltages and the current are only plausibility bounds; the device decides what it accepts, and the real limits depend on the system voltage. Whether `device_mode=off` stops charging was only seen as the register value (the test happened at night).
+
+Not exposed on purpose: battery type (it may reset other settings), restore-defaults and clear commands, and anything that could lock the device out. Other registers can be added to `WRITABLE` in `src/smartsolar/vreg.py` once their behaviour is known.
+
+Open: the registers for battery current, yield and panel power are decoded but only their night values (zero) were seen; they need a daytime check.
 
 ## GATT protocol
 
-Service `306b0001-b081-4037-83dc-e59fcc3cdfd0`, three characteristics (`0021` control, `0024` and `0027` data). Pairing: SMP passkey, default `000000`. A BlueZ agent that answers the passkey request is registered only while pairing (`dbus-fast`). Records are `[kind][ctx][CBOR register id][CBOR value]`; the details are in `src/smartsolar/vreg.py`, the register list is `smartsolar vregs`.
+Service `306b0001-b081-4037-83dc-e59fcc3cdfd0`, three characteristics (`0021` control, `0024` and `0027` data). Pairing: SMP passkey, default `000000`. A BlueZ agent that answers the passkey request is registered from before the connect until pairing is done (`dbus-fast`). Answers are records `[kind][ctx][CBOR register id][CBOR value]`, requests are `[0x05 get | 0x06 set][ctx][CBOR array]`; registers are read and written in context 3 (contexts 0 and 1 only answer for a few static registers). The details are in `src/smartsolar/vreg.py`, the register list is `smartsolar vregs`.
 
 ## Layout
 
