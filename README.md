@@ -58,6 +58,7 @@ smartsolar scan                    Victron devices seen, with model, record type
 smartsolar rescan                  choose the device again now
 smartsolar reconnect               drop the GATT connection and connect again
 smartsolar write NAME=VALUE ...    change a register over GATT (see Writing)
+smartsolar profile save|load|diff|show|list   sets of charge settings (see Profiles)
 smartsolar fetch-key [--show]      read the Instant Readout key over GATT now
 smartsolar decode --key HEX DATA   decode one advertisement offline
 smartsolar vregs [--writable]      the registers decoded over GATT, or the ones `write` can change
@@ -89,6 +90,32 @@ Notes: `load_output_control` `alt1` is the mode the test device was found in; af
 Not exposed on purpose: battery type (it may reset other settings), restore-defaults and clear commands, and anything that could lock the device out. Other registers can be added to `WRITABLE` in `src/smartsolar/vreg.py` once their behaviour is known.
 
 Open: the registers for battery current, yield and panel power are decoded but only their night values (zero) were seen; they need a daytime check.
+
+## Profiles
+
+A profile is a YAML file with a set of charge settings (`absorption_voltage`, `float_voltage`, `battery_max_current`); it never contains the charger mode or the load output. Profiles of the battery types in Victron's charge algorithm table are built in, for 12 V and 24 V systems:
+
+```
+smartsolar profile list                      the built-in profiles with their voltages
+smartsolar profile show lifepo4-12v
+smartsolar profile save before.yml           save the device's current settings (connects if needed)
+smartsolar profile diff gel-deep-discharge-12v
+smartsolar profile load gel-deep-discharge-12v   diff, confirm, write only what differs, read back and verify
+smartsolar profile load before.yml -y        restore
+```
+
+| Name (12 V; `-24v` is twice the voltages) | Absorption / float | Battery types (switch position in the manual) |
+| --- | --- | --- |
+| `gel-long-life-12v` | 14.1 / 13.8 V | Gel long life (OPzV), Gel Exide A600, Gel MK (0) |
+| `gel-deep-discharge-12v` | 14.3 / 13.8 V | Gel Victron deep discharge, Gel Exide A200, AGM Victron deep discharge, stationary tubular plate OPzS (1) |
+| `victron-default-12v` | 14.4 / 13.8 V | the default algorithm of the same battery types (2) |
+| `agm-spiral-cell-12v` | 14.7 / 13.8 V | AGM spiral cell, stationary tubular plate OPzS, Rolls AGM (3) |
+| `pzs-tubular-1-12v` | 14.9 / 13.8 V | PzS tubular plate traction or OPzS (4) |
+| `pzs-tubular-2-12v` | 15.1 / 13.8 V | PzS tubular plate traction or OPzS (5) |
+| `pzs-tubular-3-12v` | 15.3 / 13.8 V | PzS tubular plate traction or OPzS (6) |
+| `lifepo4-12v` | 14.2 / 13.5 V | Lithium iron phosphate (7) |
+
+The values are from the "battery charge algorithm" table in Victron's MPPT manual (BlueSolar MPPT 100/30 and 100/50, which uses the same charge algorithms as the SmartSolar). **They are not the presets of the VictronConnect app:** the app's list for the SmartSolar was not available when this was written, so check the voltages against your battery's datasheet and the manual of your model. A profile only sets the absorption and float voltage (and the current, if the file has it). The presets also define the equalization voltage, the temperature compensation and the low-voltage limits, which `smartsolar` can not write; the device reports `battery_type` 255 (user defined) either way. `profile load` compares with the live values first, asks for confirmation (`--yes` skips it) and verifies by reading back; `--dry-run` only shows the differences.
 
 ## GATT protocol
 

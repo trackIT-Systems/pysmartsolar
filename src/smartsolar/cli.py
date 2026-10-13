@@ -11,7 +11,8 @@ from typing import Any
 
 from smartsolar import __version__, instant, ipc
 from smartsolar.config import DEFAULT_CONFIG_PATH, DEFAULT_SOCKET_PATH, load_config, parse_key
-from smartsolar.errors import AdvertError, ConfigError, DaemonError, DaemonUnreachable, InvalidWriteError, SmartsolarError
+from smartsolar import profiles
+from smartsolar.errors import AdvertError, ConfigError, DaemonError, DaemonUnreachable, InvalidWriteError, ProfileError, SmartsolarError
 from smartsolar.tracker import advert_values
 from smartsolar.vreg import build_write, vreg_table, writable_table
 
@@ -260,7 +261,94 @@ def cmd_write(args: argparse.Namespace, socket: Path) -> int:
     return EXIT_OK if all(w["ok"] for w in result["written"]) else EXIT_ERROR
 
 
+def format_changes(changes: list[profiles.Change]) -> str:
+    return table([[c.name, "?" if c.old is None else fmt_value(c.old), "->", fmt_value(c.new), c.unit] for c in changes])
+
+
+def live_settings(socket: Path) -> tuple[str | None, list[dict[str, Any]]]:
+    result = ipc.request(socket, "settings", {}, timeout=180)
+    return result.get("device"), result["values"]
+
+
+def cmd_profile(args: argparse.Namespace) -> int:
+    action = args.profile_cmd
+    if action == "list":
+        found = profiles.list_premade()
+        if args.json:
+            print(json.dumps([{"name": p.name, "description": p.description, "values": p.values} for p in found], indent=2, ensure_ascii=False))
+        else:
+            print(table([[p.name, ", ".join(f"{k}={fmt_value(v)}" for k, v in p.values.items()), p.description] for p in found], ["NAME", "VALUES", "BATTERY"]))
+        return EXIT_OK
+    if action == "show":
+        profile = profiles.load_profile(args.profile)
+        if args.json:
+            print(json.dumps({"name": profile.name, "description": profile.description, "values": profile.values}, indent=2, ensure_ascii=False))
+        else:
+            print(profiles.dump_profile(profile).split("\n", 1)[1], end="")
+        return EXIT_OK
+    socket = resolve_socket(args)
+    if action == "save":
+        return cmd_profile_save(args, socket)
+    return cmd_profile_apply(args, socket)
+
+
+def cmd_profile_save(args: argparse.Namespace, socket: Path) -> int:
+    path = None if args.file == "-" else Path(args.file)
+    if path is not None and path.exists() and not args.force:
+        print(f"error: {path} exists, use --force to overwrite", file=sys.stderr)
+        return EXIT_USAGE
+    device, values = live_settings(socket)
+    profile = profiles.profile_from_values(values, name=args.name or (path.stem if path else "profile"), description=args.description or "")
+    text = profiles.dump_profile(profile, device=device)
+    if path is None:
+        print(text, end="")
+        return EXIT_OK
+    try:
+        with open(path, "w" if args.force else "x", encoding="utf-8") as f:
+            f.write(text)
+    except OSError as exc:
+        print(f"error: cannot write {path}: {exc.strerror or exc}", file=sys.stderr)
+        return EXIT_ERROR
+    print(f"saved {len(profile.values)} settings to {path}")
+    return EXIT_OK
+
+
+def cmd_profile_apply(args: argparse.Namespace, socket: Path) -> int:
+    """profile diff / profile load: compare with the device, then write what differs and verify."""
+    profile = profiles.load_profile(args.profile)
+    _, current = live_settings(socket)
+    changes = profiles.diff(profile, current)
+    loading = args.profile_cmd == "load" and not args.dry_run
+    outcome: dict[str, Any] = {"profile": profile.name, "changes": [{"name": c.name, "old": c.old, "new": c.new, "unit": c.unit} for c in changes]}
+    if not changes:
+        print(f"{profile.name}: the device already has these values, nothing to change" if not args.json else json.dumps(outcome, indent=2, ensure_ascii=False))
+        return EXIT_OK
+    if not args.json:
+        print(f"{profile.name}: {len(changes)} of {len(profile.values)} value(s) differ" if not loading else f"Loading {profile.name}:")
+        print(format_changes(changes))
+    if not loading:
+        if args.json:
+            print(json.dumps(outcome, indent=2, ensure_ascii=False))
+        return EXIT_OK
+    refused = confirm_write([f"{c.name} = {fmt_value(c.new)} {c.unit}".rstrip() for c in changes], args.yes)
+    if refused is not None:
+        return refused
+    result = ipc.request(socket, "write", {"values": {c.name: c.new for c in changes}}, timeout=180)
+    bad = [w for w in result["written"] if not w["ok"]]
+    outcome.update(written=True, verified=not bad, mismatched=[w["name"] for w in bad])
+    if args.json:
+        print(json.dumps(outcome, indent=2, ensure_ascii=False))
+    elif not bad:
+        print(f"written and verified: {len(changes)} value(s) read back as expected")
+    if bad:
+        print("error: the device does not report the written value for: " + ", ".join(f"{w['name']} (wanted {fmt_value(w['requested'])}, got {fmt_value(w['value'])})" for w in bad), file=sys.stderr)
+        return EXIT_ERROR
+    return EXIT_OK
+
+
 def run(args: argparse.Namespace) -> int:
+    if args.cmd == "profile" and args.profile_cmd in ("list", "show"):
+        return cmd_profile(args)
     if args.cmd == "decode":
         return cmd_decode(args)
     if args.cmd == "vregs":
@@ -268,6 +356,8 @@ def run(args: argparse.Namespace) -> int:
     socket = resolve_socket(args)
     if args.cmd == "write":
         return cmd_write(args, socket)
+    if args.cmd == "profile":
+        return cmd_profile(args)
 
     def show(result: Any, text: str) -> int:
         print(json.dumps(result, indent=2, ensure_ascii=False) if args.json else text)
@@ -324,6 +414,22 @@ def build_parser() -> argparse.ArgumentParser:
     read = sub.add_parser("read", parents=[common], help="newest advertisement values, and GATT values (hold: now, poll: connects now)")
     read.add_argument("block", nargs="?", default="all", choices=["all", "advert", "gatt"])
     read.add_argument("--raw", action="store_true", help="also list every register received over GATT as hex, decoded or not")
+    profile = sub.add_parser("profile", help="save, show and load sets of charge settings (premade battery presets included)")
+    psub = profile.add_subparsers(dest="profile_cmd", required=True, metavar="action")
+    psub.add_parser("list", parents=[common], help="list the premade profiles")
+    show = psub.add_parser("show", parents=[common], help="print a profile (works without the daemon)")
+    show.add_argument("profile", metavar="NAME|FILE", help="premade name, or a path (contains / or ends in .yml)")
+    save = psub.add_parser("save", parents=[common], help="save the device's current settings to a file (connects if needed)")
+    save.add_argument("file", metavar="FILE", help="where to write the YAML ('-' for stdout)")
+    save.add_argument("--name", help="profile name (default: the file name)")
+    save.add_argument("--description", help="profile description")
+    save.add_argument("--force", action="store_true", help="overwrite an existing file")
+    for action, text in (("diff", "show what loading a profile would change"), ("load", "write a profile to the device: diff, confirm, write, verify")):
+        p = psub.add_parser(action, parents=[common], help=text)
+        p.add_argument("profile", metavar="NAME|FILE", help="premade name, or a path (contains / or ends in .yml)")
+        if action == "load":
+            p.add_argument("--dry-run", action="store_true", help="only show the differences")
+            p.add_argument("--yes", "-y", action="store_true", help="do not ask for confirmation")
     sub.add_parser("reconnect", parents=[common], help="drop the GATT connection and connect again")
     sub.add_parser("rescan", parents=[common], help="choose the device again now")
     sub.add_parser("scan", parents=[common], help="Victron devices seen in the advertisements")
@@ -351,7 +457,7 @@ def main(argv: list[str] | None = None) -> int:
     except DaemonError as exc:
         print(f"error: {exc.message}", file=sys.stderr)
         return EXIT_ERROR
-    except (ConfigError, InvalidWriteError) as exc:
+    except (ConfigError, InvalidWriteError, ProfileError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     except SmartsolarError as exc:

@@ -1,0 +1,5 @@
+name: lifepo4-12v
+description: Lithium iron phosphate (LiFePO4) (position 7), 12 V system
+values:
+  absorption_voltage: 14.2
+  float_voltage: 13.5

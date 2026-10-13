@@ -1,0 +1,5 @@
+name: agm-spiral-cell-12v
+description: AGM spiral cell, stationary tubular plate OPzS, Rolls AGM (position 3), 12 V system
+values:
+  absorption_voltage: 14.7
+  float_voltage: 13.8

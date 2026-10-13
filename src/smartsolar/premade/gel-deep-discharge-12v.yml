@@ -1,0 +1,6 @@
+name: gel-deep-discharge-12v
+description: Gel Victron deep discharge, Gel Exide A200, AGM Victron deep discharge, stationary tubular
+  plate OPzS (position 1), 12 V system
+values:
+  absorption_voltage: 14.3
+  float_voltage: 13.8

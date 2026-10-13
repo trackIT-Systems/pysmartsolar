@@ -362,3 +362,49 @@ def test_write_command_errors():
             assert err.value.type == "write_failed" and "did not confirm" in err.value.message
 
     run(go())
+
+
+def test_settings_command_reads_the_writable_values_live():
+    async def go():
+        async with Env() as env:
+            with pytest.raises(DaemonError) as err:
+                await env.call("settings")
+            assert err.value.type == "no_data"
+            await env.select()
+            result = await env.call("settings")
+            assert {v["name"]: v["value"] for v in result["values"]} == {"float_voltage": 13.5, "absorption_voltage": 14.5, "battery_max_current": 15.0}
+            assert all(v["unit"] for v in result["values"])
+            with pytest.raises(DaemonError) as err:
+                await env.call("settings", names=["battery_voltage"])
+            assert err.value.type == "bad_request"
+
+    run(go())
+
+
+def test_profile_save_load_and_restore_through_the_cli(tmp_path, capsys):
+    from smartsolar import cli
+
+    async def go():
+        async with Env() as env:
+            await env.select()
+
+            def cli_run(*argv):
+                return asyncio.to_thread(cli.main, ["--socket", str(env.sock), "profile", *argv])
+
+            before = tmp_path / "before.yml"
+            assert await cli_run("save", str(before)) == 0
+            assert await cli_run("diff", "lifepo4-12v") == 0
+            assert "1 of 2 value(s) differ" in capsys.readouterr().out  # float 13.5 is the same already
+            assert env.backend.set_log == []  # diff and save write nothing
+            assert await cli_run("load", "lifepo4-12v", "--dry-run") == 0 and env.backend.set_log == []
+
+            assert await cli_run("load", "lifepo4-12v", "--yes") == 0
+            assert env.backend.registers[0xEDF7] == (1420).to_bytes(2, "little") and env.backend.registers[0xEDF6] == (1350).to_bytes(2, "little")
+            assert [v for v, _ in env.backend.set_log] == [0xEDF7]  # float was 13.5 already: only what differs is written
+            assert await cli_run("diff", "lifepo4-12v") == 0
+            assert "nothing to change" in capsys.readouterr().out.rsplit("written and verified", 1)[-1]
+
+            assert await cli_run("load", str(before), "--yes") == 0  # restore
+            assert env.backend.registers[0xEDF7] == bytes.fromhex("aa05")
+
+    run(go())

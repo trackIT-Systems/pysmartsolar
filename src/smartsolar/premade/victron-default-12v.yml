@@ -1,0 +1,6 @@
+name: victron-default-12v
+description: 'Victron default algorithm: Gel/AGM Victron deep discharge, Gel Exide A200, OPzS (position
+  2), 12 V system'
+values:
+  absorption_voltage: 14.4
+  float_voltage: 13.8

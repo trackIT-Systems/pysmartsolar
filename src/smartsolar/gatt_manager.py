@@ -119,6 +119,7 @@ class GattManager:
         self._poll_futures: list[asyncio.Future] = []
         self._key_futures: list[asyncio.Future] = []
         self._write_requests: list[tuple[list[WriteItem], asyncio.Future]] = []
+        self._read_requests: list[tuple[list[int], asyncio.Future]] = []
         self._poll_now = False
         self._next_poll = 0.0
         self._paired: set[str] = set()
@@ -146,6 +147,13 @@ class GattManager:
         """Connect if needed, write the registers, read them back. Resolves with one result per item."""
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._write_requests.append((items, future))
+        self._wake.set()
+        return future
+
+    def request_read(self, vregs: list[int]) -> asyncio.Future:
+        """Connect if needed and read registers now. Resolves with {vreg: raw value}."""
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._read_requests.append((vregs, future))
         self._wake.set()
         return future
 
@@ -219,7 +227,7 @@ class GattManager:
         return bool(self._key_futures) or not self._key_known(adv.address)
 
     def _has_work(self, adv: Advertisement) -> bool:
-        if self._needs_key(adv) or self._write_requests:
+        if self._needs_key(adv) or self._write_requests or self._read_requests:
             return True
         if self.cfg.mode == "hold":
             return True
@@ -315,6 +323,7 @@ class GattManager:
                 if not future.done():
                     future.set_result(key)
             self._key_futures = []
+        await self._do_reads(session)
         await self._do_writes(adv, session)
         if self.cfg.mode == "poll":
             await self._collect(adv, session)
@@ -356,6 +365,7 @@ class GattManager:
                 raise NotConnectedError("link lost")
             if self._reconnect or self._device_changed:
                 return
+            await self._do_reads(session)
             await self._do_writes(adv, session)
             if self._clock() >= next_publish:
                 await self._until_stop(session.refresh(POLLED_VREGS))
@@ -365,6 +375,26 @@ class GattManager:
                     self.last_poll = reading.time
                 next_publish = self._clock() + self.cfg.publish_interval_s
             await self._sleep(max(0.0, min(1.0, next_publish - self._clock())))
+
+    async def _do_reads(self, session: GattSession) -> None:
+        while self._read_requests:
+            vregs, future = self._read_requests.pop(0)
+            try:
+                values = {}
+                for vreg in vregs:
+                    values[vreg] = await self._until_stop(session.request(vreg, self.cfg.request_timeout_s))
+                future.set_result(values)
+            except _Stopping:
+                if not future.done():
+                    future.set_exception(NotConnectedError("shutting down"))
+                raise
+            except NotConnectedError as exc:
+                if not future.done():
+                    future.set_exception(exc)
+                raise
+            except (SmartsolarError, TimeoutError) as exc:
+                if not future.done():
+                    future.set_exception(exc)
 
     async def _do_writes(self, adv: Advertisement, session: GattSession) -> None:
         """Run the queued writes: note the old value, write, check the echo, read the register back."""
@@ -469,12 +499,13 @@ class GattManager:
             log.debug("disconnect: %s", exc)
 
     async def _teardown(self) -> None:
-        for future in self._poll_futures + self._key_futures + [f for _, f in self._write_requests]:
+        for future in self._poll_futures + self._key_futures + [f for _, f in self._write_requests + self._read_requests]:
             if not future.done():
                 future.set_exception(NotConnectedError("shutting down"))
         self._poll_futures = []
         self._key_futures = []
         self._write_requests = []
+        self._read_requests = []
 
     def _set_state(self, state: GattState) -> None:
         if state is self.state:

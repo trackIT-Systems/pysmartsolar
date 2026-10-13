@@ -38,6 +38,10 @@ class InvalidWriteError(SmartsolarError):
     """A write request failed validation before anything was sent."""
 
 
+class ProfileError(SmartsolarError):
+    """A profile file or name cannot be used."""
+
+
 class WriteFailed(SmartsolarError):
     """The device did not accept a write, or does not report the written value."""
 

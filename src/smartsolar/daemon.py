@@ -31,7 +31,7 @@ from smartsolar.reading import Event, Reading, local_iso, utc_iso
 from smartsolar.server import ControlServer
 from smartsolar.state import BLOCKS, AdvertStats, Cache, GattStats
 from smartsolar.tracker import DeviceTracker
-from smartsolar.vreg import build_write
+from smartsolar.vreg import VREGS, WRITABLE, build_write, decode_vreg
 
 log = logging.getLogger("smartsolard")
 
@@ -248,6 +248,7 @@ class Daemon:
             "scan": self._cmd_scan,
             "fetch_key": self._cmd_fetch_key,
             "write": self._cmd_write,
+            "settings": self._cmd_settings,
         }
 
     def _key_status(self) -> str:
@@ -381,6 +382,25 @@ class Daemon:
             result["key"] = key.hex()
         return result
 
+
+    async def _cmd_settings(self, args: dict[str, Any]) -> dict[str, Any]:
+        """The current value of every writable register, read live (connects on demand)."""
+        if self.tracker.current_address is None:
+            raise NoDataError("no device selected yet")
+        names = args.get("names") or [n for n, w in WRITABLE.items() if w.values is None]
+        unknown = [n for n in names if n not in WRITABLE]
+        if unknown:
+            raise BadRequest(f"not a writable register: {', '.join(map(str, unknown))}")
+        cfg = self.config.gatt
+        timeout = cfg.connect_timeout_s + cfg.pair_timeout_s + cfg.request_timeout_s * (len(names) + 2) + POLL_TIMEOUT_MARGIN_S
+        raw = await asyncio.wait_for(self.gatt.request_read([WRITABLE[n].vreg for n in names]), timeout)
+        values = []
+        for name in names:
+            vreg = WRITABLE[name].vreg
+            value = decode_vreg(vreg, raw[vreg])
+            if value is not None:
+                values.append(value.as_dict() | {"name": name})
+        return {"device": self.tracker.current_address, "values": values}
 
     async def _cmd_write(self, args: dict[str, Any]) -> dict[str, Any]:
         values = args.get("values")

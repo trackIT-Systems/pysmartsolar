@@ -369,3 +369,25 @@ def test_pending_writes_fail_when_the_manager_stops():
             future.result()
 
     run(go())
+
+
+def test_request_read_connects_on_demand_and_returns_raw_values():
+    async def go():
+        async with Rig("off") as rig:
+            values = await asyncio.wait_for(rig.mgr.request_read([0xEDF6, 0xEDF7]), 3.0)
+            assert values == {0xEDF6: bytes.fromhex("4605"), 0xEDF7: bytes.fromhex("aa05")}
+            await until(lambda: rig.mgr.state is GattState.IDLE)
+            assert len(rig.backend.links) == 1 and rig.backend.links[0].disconnect_calls == 1 and rig.backend.set_log == []
+
+    run(go())
+
+
+def test_request_read_of_an_unavailable_register_fails_the_request_only():
+    async def go():
+        async with Rig("hold") as rig:
+            await until(lambda: rig.mgr.state is GattState.CONNECTED)
+            with pytest.raises(Exception, match="not available"):
+                await asyncio.wait_for(rig.mgr.request_read([0xBEEF]), 3.0)
+            assert rig.mgr.state is GattState.CONNECTED
+
+    run(go())

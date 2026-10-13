@@ -1,0 +1,6 @@
+name: gel-deep-discharge-24v
+description: Gel Victron deep discharge, Gel Exide A200, AGM Victron deep discharge, stationary tubular
+  plate OPzS (position 1), 24 V system
+values:
+  absorption_voltage: 28.6
+  float_voltage: 27.6
