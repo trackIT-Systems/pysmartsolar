@@ -27,7 +27,7 @@ dev = [
 ]
 
 [project.urls]
-Repository = "https://github.com/trackIT-Systems/pysmartsolar"
+Repository = "https://github.com/trackIT-System/pysmartsolar"
 
 [project.scripts]
 smartsolar = "smartsolar.cli:main"

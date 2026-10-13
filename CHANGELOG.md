@@ -50,5 +50,5 @@ Reconstructed from the git history; the version was never tagged and stayed 0.1.
 - A message is printed while pairing (2023-03-06).
 - An error when the number of parameters was inconclusive (2024-02-12).
 
-[1.0.0]: https://github.com/tRackIT-System/pysmartsolar/releases/tag/v1.0.0
-[0.1.0]: https://github.com/tRackIT-System/pysmartsolar/commits/main
+[1.0.0]: https://github.com/trackIT-System/pysmartsolar/releases/tag/v1.0.0
+[0.1.0]: https://github.com/trackIT-System/pysmartsolar/commits/main

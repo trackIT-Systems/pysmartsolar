@@ -1,6 +1,6 @@
 # smartsolar
 
-[![Tests](https://github.com/trackIT-Systems/pysmartsolar/actions/workflows/ci.yml/badge.svg)](https://github.com/trackIT-Systems/pysmartsolar/actions/workflows/ci.yml)
+[![Tests](https://github.com/trackIT-System/pysmartsolar/actions/workflows/ci.yml/badge.svg)](https://github.com/trackIT-System/pysmartsolar/actions/workflows/ci.yml)
 
 A daemon and a CLI for Victron SmartSolar charge controllers over Bluetooth Low Energy and over the VE.Direct cable, for autonomous sensor nodes (Raspberry Pi). `smartsolard` follows one SmartSolar permanently and reports its values to a CSV file and to MQTT (JSON and CBOR). `smartsolar` talks to the running daemon: cached and live values, key, reconnect, scan, settings.
 
@@ -119,10 +119,12 @@ Not exposed on purpose: restore-defaults and clear commands, the system voltage,
 
 ## Profiles
 
+The folder [profiles/](profiles/) has settings files made with VictronConnect (SmartSolar 75/10 AGM and LiFePO4, 75/15 LiFePO4). They are complete app files and contain the history and serial number of the charger they were saved from; only the `/Settings/` part is used.
+
 A profile is a **VictronConnect settings file** (`.vcsf`): the file the app saves with "Save settings to file" and loads onto a charger of the same model. `smartsolar` reads those files and applies their settings over GATT; it can also save the settings of the charger to such a file.
 
 ```
-smartsolar profile show "VE MPPT 75_15 LiFePo Profile.vcsf"   what the file sets (works without the daemon)
+smartsolar profile show "profiles/VE MPPT 75_15 LiFePo Profile.vcsf"   what the file sets (works without the daemon)
 smartsolar profile diff FILE.vcsf                            compare with the charger
 smartsolar profile load FILE.vcsf                            check, diff, confirm, write only what differs, read back
 smartsolar profile load FILE.vcsf --dry-run                  the same without writing
