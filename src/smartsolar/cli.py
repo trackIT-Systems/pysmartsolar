@@ -498,6 +498,7 @@ def build_parser() -> argparse.ArgumentParser:
     save.add_argument("file", metavar="FILE.vcsf", help="where to write ('-' for stdout)")
     save.add_argument("--description", help="description stored in the file")
     save.add_argument("--force", action="store_true", help="overwrite an existing file")
+    save.add_argument("--via", choices=VIA_CHOICES, help="which way to the device (default: daemon.registers)")
     for action, text in (("diff", "show what loading a settings file would change"), ("load", "write a settings file to the device: check, diff, confirm, write, verify")):
         p = psub.add_parser(action, parents=[common], help=text)
         p.add_argument("file", metavar="FILE.vcsf")

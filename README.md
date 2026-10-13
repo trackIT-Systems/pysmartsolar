@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/trackIT-Systems/pysmartsolar/actions/workflows/ci.yml/badge.svg)](https://github.com/trackIT-Systems/pysmartsolar/actions/workflows/ci.yml)
 
-A daemon and a CLI for Victron SmartSolar charge controllers over Bluetooth Low Energy, for autonomous sensor nodes (Raspberry Pi). `smartsolard` follows one SmartSolar permanently and reports its values to a CSV file and to MQTT (JSON and CBOR). `smartsolar` talks to the running daemon: cached and live values, key, reconnect, scan.
+A daemon and a CLI for Victron SmartSolar charge controllers over Bluetooth Low Energy and over the VE.Direct cable, for autonomous sensor nodes (Raspberry Pi). `smartsolard` follows one SmartSolar permanently and reports its values to a CSV file and to MQTT (JSON and CBOR). `smartsolar` talks to the running daemon: cached and live values, key, reconnect, scan, settings.
 
 > **Caution:** the GATT part of this project is based on reverse engineering. Writing is limited to a short list of registers (see [Writing](#writing)); use it only if you understand the effect.
 
@@ -15,9 +15,28 @@ A GATT connection to a SmartSolar is unusable while the Raspberry Pi's 2.4 GHz W
 
 The measurements are in the trackIT wiki ("Victron SmartSolar BLE readout").
 
+## VE.Direct cable
+
+Some systems have the charger on a VE.Direct cable (FTDI USB, `/dev/ttyUSBvd0` on tsOS), with or without Bluetooth. The daemon can use either interface or both; each is its own block of readings (`source` in MQTT, `block` in the CSV): `advert`, `gatt` and `vedirect`.
+
+```yaml
+serial:
+  enabled: true
+  port: /dev/ttyUSBvd0
+ble:
+  enabled: false          # a system without Bluetooth: nothing of the BLE stack is started
+```
+
+* **Text blocks.** The charger pushes a block of text about once a second (battery and panel voltage, current, power, state, error, yields, load output, serial number; 19200 baud). Each valid block (checksum) becomes a reading. A block can be lost now and then (the device sometimes garbles the block after a burst of HEX frames); `smartsolar status` counts them.
+* **HEX protocol.** The same cable reads and writes the settings registers (the same ids and encodings as over GATT, so `write`, `profile diff` and `profile load` work unchanged). Without Bluetooth this is the only way to provision a charger. A request makes the device cut the text block it is sending, so it is only used when you ask (`serial.hex: false` keeps the daemon from ever sending a byte).
+* **Which way settings take.** `daemon.registers: auto` uses the cable when it is connected and falls back to GATT; `serial` and `gatt` insist on one. `--via serial|gatt` overrides it per command. `rx_port_function` and `tx_port_function` are never written over the cable (a wrong value could cut the connection).
+* **Identity.** Devices are called by their serial number everywhere (MQTT topic `{host}/smartsolar/{serial}/json`, CSV `device`). The cable sends it (`SER#`); over Bluetooth it is part of the name (`SmartSolar HQ22294ZGEU`). With both interfaces the BLE device with the cable's serial number is the one that is followed, whatever its signal strength. The MAC address is only used when no serial number is known.
+* **One reader.** The port is opened exclusively. Do not run another program that reads it (the old `vedirect_dump` of mqttutil, for example): two readers take bytes from each other and the blocks fail their checksums.
+* The charger's TX port function must stay `communication` (the default); `rx_port_function` and `tx_port_function` can only be changed over Bluetooth.
+
 ## Install
 
-Python 3.12+, BlueZ.
+Python 3.12+, BlueZ (not needed with `ble.enabled: false`), pyserial for the cable.
 
 ```bash
 pip install -e .          # smartsolard, smartsolar
@@ -51,13 +70,13 @@ The key and the passkey are never logged and never published.
 ## CLI
 
 ```
-smartsolar status                  device, key, advertisement and GATT state
-smartsolar cached [advert|gatt]    last values the daemon has (no radio traffic)
-smartsolar read [advert|gatt]      newest advertisement values; GATT: hold = now, poll = connects now
+smartsolar status                  device, key, advertisement, GATT and cable state
+smartsolar cached [advert|gatt|vedirect]   last values the daemon has (no radio traffic)
+smartsolar read [advert|gatt|vedirect]     newest advertisement values; GATT: hold = now, poll = connects now; vedirect: newest text block
 smartsolar scan                    Victron devices seen, with model, record type and key state
 smartsolar rescan                  choose the device again now
 smartsolar reconnect               drop the GATT connection and connect again
-smartsolar write NAME=VALUE ...    change settings over GATT (see Writing)
+smartsolar write NAME=VALUE ... [--via serial|gatt]   change settings over the cable or GATT (see Writing)
 smartsolar profile show|diff|load|save FILE.vcsf   VictronConnect settings files (see Profiles)
 smartsolar fetch-key [--show]      read the Instant Readout key over GATT now
 smartsolar decode --key HEX DATA   decode one advertisement offline
@@ -68,7 +87,7 @@ smartsolar vregs [--writable]      the registers decoded over GATT, or the ones 
 
 ## Writing
 
-`smartsolar write NAME=VALUE ...` changes settings over GATT, through the daemon (it connects on demand in `off` and `poll` mode and uses the open link in `hold`). Only the settings in `smartsolar vregs --writable` can be written; everything else, including the key, the passkey, the keepalive, restore-defaults and the system voltage, is refused before anything is sent.
+`smartsolar write NAME=VALUE ...` changes settings through the daemon, over the VE.Direct cable if it is connected, else over GATT (it connects on demand in `off` and `poll` mode and uses the open link in `hold`); see [VE.Direct cable](#vedirect-cable) for `--via`. Only the settings in `smartsolar vregs --writable` can be written; everything else, including the key, the passkey, the keepalive, restore-defaults and the system voltage, is refused before anything is sent.
 
 ```
 smartsolar write device_mode=off
