@@ -138,11 +138,15 @@ The file is a `VCCF` header and a zlib-compressed JSON document with VictronConn
 
 ## GATT protocol
 
-Service `306b0001-b081-4037-83dc-e59fcc3cdfd0`, three characteristics (`0021` control, `0024` and `0027` data). Pairing: SMP passkey, default `000000`. A BlueZ agent that answers the passkey request is registered from before the connect until pairing is done (`dbus-fast`). Answers are records `[kind][ctx][CBOR register id][CBOR value]`, requests are `[0x05 get | 0x06 set][ctx][CBOR array]`; registers are read and written in context 3 (contexts 0 and 1 only answer for a few static registers). The details are in `src/smartsolar/vreg.py`, the register list is `smartsolar vregs`.
+Service `306b0001-b081-4037-83dc-e59fcc3cdfd0`, three characteristics (`0021` control, `0024` and `0027` data). Pairing: SMP passkey, default `000000`. A BlueZ agent that answers the passkey request is registered from before the connect until pairing is done (`dbus-fast`). Answers are records `[kind][ctx][CBOR register id][CBOR value]`, requests are `[0x05 get | 0x06 set][ctx][CBOR array]`; registers are read and written in context 3 (contexts 0 and 1 only answer for a few static registers). The details are in `src/smartsolar/vreg.py`, the register list is `smartsolar vregs`. The protocol, the quirks of the device and what is still unknown are written down in [docs/](docs/README.md).
 
 ## Layout
 
 `src/smartsolar/`: `instant.py` (Instant Readout decoding), `vreg.py` (GATT records and registers), `tracker.py` (device selection, decoding), `keys.py`, `gatt_session.py` (one link), `gatt_manager.py` (modes, retries), `daemon.py`, `cli.py`, `server.py` and `ipc.py` (control socket), `outputs/`, `ble/` (transport interface; only `ble/bleak_backend.py` and `ble/agent.py` import bleak and dbus-fast). `tests/` runs without hardware against a fake backend (`tests/fakes.py`).
+
+## Releases
+
+Semantic versioning; releases are made by pushing a tag `vX.Y.Z`, see [docs/releasing.md](docs/releasing.md) and the [changelog](CHANGELOG.md).
 
 ## Credits
 
