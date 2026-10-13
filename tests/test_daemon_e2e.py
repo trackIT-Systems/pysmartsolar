@@ -1,8 +1,11 @@
 import asyncio
 import csv
 import json
+import os
 import shutil
+import socket
 import stat
+import sys
 import tempfile
 from pathlib import Path
 
@@ -22,12 +25,20 @@ from smartsolar.outputs.mqtt import MqttOutput
 TOPIC = "tracker/smartsolar/f748188a779d"
 
 
+def free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
 class Env:
     """A daemon wired to the fake backend, with real socket and real CSV/MQTT sinks."""
 
-    def __init__(self, *, mode="off", keys="default", ble=True, serial=None, registers="auto", hex=True, topic_id=None, **gatt):
-        self.dir = Path(tempfile.mkdtemp(dir="/tmp", prefix="ss-"))
-        self.sock = self.dir / "run" / "s.sock"
+    def __init__(self, *, mode="off", keys="default", ble=True, serial=None, registers="auto", hex=True, topic_id=None, tcp=False, **gatt):
+        # a short directory: macOS limits the length of a Unix socket path
+        self.dir = Path(tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None, prefix="ss-"))
+        self.tcp = tcp or sys.platform.startswith("win")  # Windows has no usable Unix sockets
+        self.sock = f"tcp://127.0.0.1:{free_port()}" if self.tcp else self.dir / "run" / "s.sock"
         self.csv_path = self.dir / "data" / "out.csv"
         self.state_dir = self.dir / "state"
         self.mqtt = FakeMqtt()
@@ -55,8 +66,17 @@ class Env:
 
     async def __aenter__(self):
         self.task = asyncio.create_task(self.daemon.run(handle_signals=False))
-        await until(lambda: self.sock.exists() and (self.backend.scanning or not self.ble))
+        await until(lambda: self._listening() and (self.backend.scanning or not self.ble))
         return self
+
+    def _listening(self) -> bool:
+        if not self.tcp:
+            return self.sock.exists()
+        try:
+            socket.create_connection((self.daemon.server.endpoint.host, self.daemon.server.endpoint.port), timeout=0.2).close()
+            return True
+        except OSError:
+            return False
 
     async def __aexit__(self, *exc):
         await self.stop()
@@ -167,7 +187,7 @@ def test_a_missing_key_is_fetched_over_gatt_stored_and_then_used():
         async with Env(keys={}) as env:
             await env.select()
             await until(lambda: (env.state_dir / "keys.json").exists())
-            assert stat.S_IMODE((env.state_dir / "keys.json").stat().st_mode) == 0o600
+            assert sys.platform.startswith("win") or stat.S_IMODE((env.state_dir / "keys.json").stat().st_mode) == 0o600
             assert json.loads((env.state_dir / "keys.json").read_text()) == {A: TEST_KEY.hex()}
             assert env.backend.pair_calls == ["000000"] and len(env.backend.links) == 1
             env.advertise(n=2, voltage=13.5)
@@ -462,5 +482,21 @@ def test_the_sample_profile_loads_on_the_fake_device_without_changes(capsys):
             sample = str(Path(__file__).parent / "data" / "ve-mppt-75-15-lifepo4.vcsf")
             assert await asyncio.to_thread(cli.main, ["--socket", str(env.sock), "profile", "diff", sample]) == 0
             assert "nothing to change" in capsys.readouterr().out and env.backend.set_log == []
+
+    run(go())
+
+
+def test_the_daemon_and_the_cli_work_over_loopback_tcp(capsys):
+    from smartsolar import cli
+
+    async def go():
+        async with Env(tcp=True) as env:
+            await env.select()
+            assert str(env.sock).startswith("tcp://127.0.0.1:")
+            assert (await env.call("status"))["device"]["address"] == A
+            result = await env.call("write", values={"float_voltage": 13.8})
+            assert result["written"][0]["ok"] and env.backend.registers[0xEDF6] == bytes.fromhex("6405")
+            assert await asyncio.to_thread(cli.main, ["--socket", str(env.sock), "status"]) == 0
+            assert A in capsys.readouterr().out
 
     run(go())

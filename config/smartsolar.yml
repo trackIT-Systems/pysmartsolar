@@ -1,9 +1,12 @@
-# smartsolard configuration. Every value shown is the default.
+# smartsolard configuration. Every value shown is the default; the paths are the Linux (tsOS) ones.
+# macOS: ~/Library/Application Support/smartsolar. Windows: %PROGRAMDATA%\smartsolar and
+# socket: tcp://127.0.0.1:47821 (see docs/platforms.md).
 
 ble:
   enabled: true                  # false: no Bluetooth at all (a system that only has the VE.Direct cable)
   # adapter: hci0
-  # address: "F7:48:18:8A:77:9D"   # pin a device (disables RSSI selection and switching)
+  # address: "F7:48:18:8A:77:9D"   # pin a device (disables RSSI selection and switching); a MAC address,
+  #                                  # a serial number ("HQ22294ZGEU") or, on macOS, the device UUID
   select_window_s: 10            # listen this long before the first device selection
   rescan_interval_s: 3600        # how often the selection is reviewed
   switch_hysteresis_db: 10       # another device must be this much stronger to replace the current one
@@ -46,7 +49,7 @@ serial:
   reopen_max_s: 60
 
 keys:
-  # Instant Readout key of each device (VictronConnect: device > settings > Product info >
+  # Instant Readout key of each device, by MAC address, serial number or (macOS) device UUID (VictronConnect: device > settings > Product info >
   # Instant readout via Bluetooth). If a device has no key here, the daemon reads it over GATT
   # once (it needs a working connection) and stores it in daemon.state_dir. This file is a secret.
   # "F7:48:18:8A:77:9D": "00112233445566778899aabbccddeeff"

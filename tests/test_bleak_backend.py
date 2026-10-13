@@ -11,6 +11,12 @@ from smartsolar.vreg import CHAR_UUIDS
 from fakes import A, advert_data, run
 
 
+@pytest.fixture(autouse=True)
+def bluez(monkeypatch):
+    """The tests below describe the BlueZ path (pairing agent); the other systems are tested at the end."""
+    monkeypatch.setattr(bb, "HAS_AGENT", True)
+
+
 def test_connect_error_mapping():
     assert bb.map_connect_error(BleakDeviceNotFoundError("x")).not_found
     busy = bb.map_connect_error(BleakDBusError("org.bluez.Error.InProgress", []))
@@ -120,6 +126,7 @@ def test_pair_treats_an_existing_bond_as_success(monkeypatch):
 
 
 def test_the_agent_answers_the_passkey_request():
+    pytest.importorskip("dbus_fast")
     from smartsolar.ble.agent import PasskeyAgent
 
     # dbus-fast wraps the methods; the plain functions are behind __wrapped__
@@ -342,5 +349,60 @@ def test_without_a_passkey_no_agent_is_used(monkeypatch):
 
         await bb.BleakBackend().connect(advert(), timeout_s=1.0, on_disconnect=lambda: None)
         assert events == ["lookup", "connect"]
+
+    run(go())
+
+
+# -- macOS and Windows: no agent, the system pairs ----------------------------------
+
+
+def test_without_an_agent_the_system_pairs(monkeypatch):
+    monkeypatch.setattr(bb, "HAS_AGENT", False)
+
+    async def go():
+        client = FakeClient()
+        link = bb.BleakLink(A, client)
+        await link.pair("000000", 1.0)  # the system's own pairing: no error
+
+        async def not_implemented():
+            raise NotImplementedError("Pairing is not available in Core Bluetooth")
+
+        client.pair = not_implemented
+        await link.pair("000000", 1.0)  # CoreBluetooth cannot pair on request: left to the system, no error
+        client.pair_result = BleakError("Authentication failed")
+
+        async def fails():
+            raise BleakError("Authentication failed")
+
+        client.pair = fails
+        with pytest.raises(PairingError, match="Authentication failed"):
+            await link.pair("000000", 1.0)
+
+        async def already():
+            raise BleakError("Device already paired")
+
+        client.pair = already
+        await link.pair("000000", 1.0)
+
+        async def hang():
+            await asyncio.sleep(5)
+
+        client.pair = hang
+        with pytest.raises(PairingError, match="system dialog"):
+            await link.pair("000000", 0.05)
+
+    run(go())
+
+
+def test_without_an_agent_no_agent_is_used_to_connect(monkeypatch):
+    monkeypatch.setattr(bb, "HAS_AGENT", False)
+    events = []
+    patch_connect_env(monkeypatch, events)
+
+    async def go():
+        backend = bb.BleakBackend(adapter="hci1")
+        link = await backend.connect(SimpleNamespace(address=A), timeout_s=1.0, on_disconnect=lambda: None, passkey="000000")
+        assert events == ["lookup", "connect"] and link._agent is None
+        assert backend._kwargs() == {}  # an adapter name means nothing outside BlueZ
 
     run(go())

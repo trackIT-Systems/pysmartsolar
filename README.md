@@ -36,7 +36,7 @@ ble:
 
 ## Install
 
-Python 3.12+, BlueZ (not needed with `ble.enabled: false`), pyserial for the cable.
+Python 3.12+. Linux (BlueZ; the Raspberry Pi with tsOS is the tested platform), macOS and Windows; see [docs/platforms.md](docs/platforms.md) for what differs (pairing, device names, control socket). BlueZ is not needed with `ble.enabled: false`; pyserial is used for the cable.
 
 ```bash
 pip install -e .          # smartsolard, smartsolar

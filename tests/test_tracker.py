@@ -251,3 +251,14 @@ def test_a_serial_number_nobody_advertises_changes_nothing(tmp_path):
     tracker.review()
     tracker.set_serial("HQ00000TEST")
     assert tracker.current_address == A
+
+
+def test_a_pin_can_be_a_serial_number_or_a_macos_uuid(tmp_path):
+    uuid = "6D2F8A3C-1B4E-4F7A-9C0D-5E8B7A6F1234"
+    for pin, wanted in (("HQ00000TEST", B), (uuid, uuid)):
+        tracker, _, _, _, _, clock = make(tmp_path, keys={A: TEST_KEY, B: TEST_KEY, uuid: TEST_KEY}, ble=BleConfig(address=pin, select_window_s=0))
+        feed(tracker, clock, A, -30, name="SmartSolar HQ99999OTHR")
+        feed(tracker, clock, B, -80, name="SmartSolar HQ00000TEST")
+        feed(tracker, clock, uuid, -85, name="SmartSolar HQ11111MAC")
+        tracker.review()
+        assert tracker.current_address == wanted

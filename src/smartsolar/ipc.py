@@ -1,4 +1,8 @@
-"""Newline-delimited JSON over a Unix socket: the protocol between CLI and daemon.
+"""Newline-delimited JSON over a Unix socket (or loopback TCP): the protocol between CLI and daemon.
+
+The endpoint is a socket path, or ``tcp://127.0.0.1:port`` where Unix sockets are not usable
+(Windows). TCP is limited to the loopback interface and has no file permissions to protect it:
+every local user can talk to the daemon, so use a Unix socket where there is one.
 
 Request:  {"id": 1, "cmd": "read", "args": {"block": "status"}}
 Response: {"id": 1, "ok": true, "result": ...}
@@ -7,15 +11,48 @@ Response: {"id": 1, "ok": true, "result": ...}
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import socket
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from smartsolar.errors import DaemonError, DaemonUnreachable
+from smartsolar.errors import ConfigError, DaemonError, DaemonUnreachable
 
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class Endpoint:
+    path: Path | None = None  # a Unix socket
+    host: str | None = None  # or loopback TCP
+    port: int | None = None
+
+    @property
+    def is_tcp(self) -> bool:
+        return self.host is not None
+
+    def __str__(self) -> str:
+        return f"tcp://{self.host}:{self.port}" if self.is_tcp else str(self.path)
+
+
+def parse_endpoint(value: Path | str) -> Endpoint:
+    text = str(value)
+    if not text.startswith("tcp://"):
+        return Endpoint(path=Path(text))
+    host, _, port = text[len("tcp://"):].rpartition(":")
+    try:
+        address = ipaddress.ip_address(host)
+        number = int(port)
+    except ValueError:
+        raise ConfigError(f"{text!r} is not tcp://127.0.0.1:port") from None
+    if address.version != 4 or not address.is_loopback:
+        raise ConfigError(f"{text!r}: only IPv4 loopback addresses (127.x.x.x) are allowed, the control socket has no authentication")
+    if not 1 <= number <= 65535:
+        raise ConfigError(f"{text!r}: port out of range")
+    return Endpoint(host=str(address), port=number)
 
 
 def encode(message: dict[str, Any]) -> bytes:
@@ -42,9 +79,16 @@ def request(
     """
     message = {"id": 1, "cmd": cmd, "args": args or {}}
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        endpoint = parse_endpoint(socket_path)
+    except ConfigError as exc:
+        raise DaemonUnreachable(str(exc)) from None
+    try:
+        family = socket.AF_INET if endpoint.is_tcp else getattr(socket, "AF_UNIX", None)
+        if family is None:
+            raise DaemonUnreachable("this system has no Unix sockets; use a tcp://127.0.0.1:port endpoint")
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
             sock.settimeout(timeout)
-            sock.connect(str(socket_path))
+            sock.connect((endpoint.host, endpoint.port) if endpoint.is_tcp else str(endpoint.path))
             sock.sendall(encode(message))
             buffer = bytearray()
             while b"\n" not in buffer:

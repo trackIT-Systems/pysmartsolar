@@ -39,14 +39,25 @@ def error_type(exc: BaseException) -> str:
 
 
 class ControlServer:
-    def __init__(self, path: Path, mode: int, handlers: dict[str, Handler]) -> None:
-        self.path = Path(path)
+    def __init__(self, path: Path | str, mode: int, handlers: dict[str, Handler]) -> None:
+        self.endpoint = ipc.parse_endpoint(path)
+        self.path = self.endpoint.path  # None for TCP
         self.mode = mode
         self.handlers = handlers
         self._server: asyncio.AbstractServer | None = None
         self._clients: set[asyncio.Task] = set()
 
     async def start(self) -> None:
+        if self.endpoint.is_tcp:
+            try:
+                self._server = await asyncio.start_server(self._client, self.endpoint.host, self.endpoint.port, limit=ipc.MAX_REQUEST_BYTES)
+            except OSError as exc:
+                raise SmartsolarError(f"cannot listen on {self.endpoint}: {exc}") from None
+            log.info("control socket %s", self.endpoint)
+            return
+        if not hasattr(asyncio, "start_unix_server"):
+            raise SmartsolarError("this system has no Unix sockets: set daemon.socket to tcp://127.0.0.1:port")
+        assert self.path is not None
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             if stat.S_ISSOCK(self.path.lstat().st_mode):
@@ -68,10 +79,11 @@ class ControlServer:
             await asyncio.gather(*self._clients, return_exceptions=True)
             await self._server.wait_closed()
             self._server = None
-        try:
-            self.path.unlink()
-        except FileNotFoundError:
-            pass
+        if self.path is not None:
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
 
     async def _client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = asyncio.current_task()

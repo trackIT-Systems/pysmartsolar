@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from pathlib import Path
 from typing import Protocol
 
@@ -82,10 +83,12 @@ async def open_pyserial(port: str, baud: int) -> SerialLink:
     import serial
 
     path = Path(port)
-    real = str(path.resolve()) if path.exists() else port
+    real = str(path.resolve()) if path.exists() else port  # not for COM3 and the like
+    # exclusive is POSIX only; Windows opens a COM port exclusively anyway
+    options = {} if sys.platform.startswith("win") else {"exclusive": True}
     try:
         ser = await asyncio.to_thread(
-            lambda: serial.Serial(real, baud, bytesize=8, parity="N", stopbits=1, timeout=READ_TIMEOUT_S, exclusive=True)
+            lambda: serial.Serial(real, baud, bytesize=8, parity="N", stopbits=1, timeout=READ_TIMEOUT_S, **options)
         )
     except (serial.SerialException, OSError) as exc:
         missing = isinstance(exc, FileNotFoundError) or not path.exists()

@@ -130,7 +130,7 @@ class DeviceTracker:
         return round(len(self._times) * 60.0 / window, 1) if window > 0 else 0.0
 
     def _decode(self, adv: Advertisement) -> None:
-        key, source = self.keys.get(adv.address)
+        key, source = self.keys.get(adv.address, adv.name)
         if key is None:
             self.stats.no_key += 1
             return
@@ -143,7 +143,7 @@ class DeviceTracker:
                 log.warning("%s: %s (key from %s)", adv.address, exc, source)
             if source == SOURCE_FETCHED and self._mismatches >= MISMATCHES_BEFORE_FORGETTING:
                 # The device was reset or re-keyed: the fetched key is outdated, fetch it again.
-                self.keys.forget(adv.address)
+                self.keys.forget(adv.address, adv.name)
                 self._mismatches = 0
                 self._event("key_rejected", adv.address, reason="check byte does not match the fetched key")
             return
@@ -158,6 +158,11 @@ class DeviceTracker:
 
     # -- selection ----------------------------------------------------------
 
+    def _is_pinned(self, seen: Seen) -> bool:
+        """The pin (ble.address) is a MAC address, a macOS device UUID or a serial number."""
+        pin = self.ble.address
+        return pin is not None and (seen.address.upper() == pin.upper() or (serial_from_name(seen.name) or "").upper() == pin.upper())
+
     def eligible(self) -> list[Seen]:
         """Solar chargers seen recently (other Victron devices are listed by ``scan`` but never selected).
 
@@ -171,7 +176,7 @@ class DeviceTracker:
             if s.header is not None
             and s.header.record_type == instant.RECORD_SOLAR_CHARGER
             and now - s.last_seen <= ELIGIBLE_MAX_AGE_S
-            and (self.ble.address is None or s.address == self.ble.address)
+            and (self.ble.address is None or self._is_pinned(s))
         ]
         if self.serial is not None and self.ble.address is None:
             mine = [s for s in found if serial_from_name(s.name) == self.serial]
@@ -250,7 +255,7 @@ class DeviceTracker:
         self._times.clear()
         self.last_advert_mono = self._clock()
         self._next_review = self._clock() + self.ble.rescan_interval_s
-        _, source = self.keys.get(seen.address)
+        _, source = self.keys.get(seen.address, seen.name)
         kind = "device_switched" if reason in ("switch", "serial") else "device_selected"
         self._event(kind, seen.address, rssi=round(seen.rssi), name=seen.name, key=source, reason=reason, **extra)
         if self._on_select is not None:
@@ -260,7 +265,7 @@ class DeviceTracker:
         now = self._clock()
         rows = []
         for s in sorted(self.seen.values(), key=lambda s: s.rssi, reverse=True):
-            _, source = self.keys.get(s.address)
+            _, source = self.keys.get(s.address, s.name)
             rows.append(
                 {
                     "address": s.address,

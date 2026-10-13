@@ -197,7 +197,11 @@ def format_scan(scan: dict[str, Any]) -> str:
 # -- commands -------------------------------------------------------------------
 
 
-def resolve_socket(args: argparse.Namespace) -> Path:
+def endpoint_arg(text: str) -> Path | str:
+    return text if text.startswith("tcp://") else Path(text)
+
+
+def resolve_socket(args: argparse.Namespace) -> Path | str:
     if args.socket is not None:
         return args.socket
     if args.config is not None:
@@ -280,7 +284,7 @@ def confirm_write(lines: list[str], yes: bool) -> int | None:
     return None
 
 
-def cmd_write(args: argparse.Namespace, socket: Path) -> int:
+def cmd_write(args: argparse.Namespace, socket: Path | str) -> int:
     values = parse_assignments(args.assignments)
     items = build_write(values)  # fail early, before asking
     refused = confirm_write([f"{i.name} = {fmt_value(i.value)}" for i in items], args.yes)
@@ -305,7 +309,7 @@ def via_args(args: argparse.Namespace) -> dict[str, Any]:
     return {"via": via} if via else {}
 
 
-def live_settings(socket: Path, args: argparse.Namespace | None = None) -> dict[str, Any]:
+def live_settings(socket: Path | str, args: argparse.Namespace | None = None) -> dict[str, Any]:
     return ipc.request(socket, "settings", via_args(args) if args is not None else {}, timeout=180)
 
 
@@ -349,7 +353,7 @@ def cmd_profile(args: argparse.Namespace) -> int:
     return cmd_profile_apply(args, socket)
 
 
-def cmd_profile_save(args: argparse.Namespace, socket: Path) -> int:
+def cmd_profile_save(args: argparse.Namespace, socket: Path | str) -> int:
     path = None if args.file == "-" else Path(args.file)
     if path is not None and path.exists() and not args.force:
         print(f"error: {path} exists, use --force to overwrite", file=sys.stderr)
@@ -370,7 +374,7 @@ def cmd_profile_save(args: argparse.Namespace, socket: Path) -> int:
     return EXIT_OK
 
 
-def cmd_profile_apply(args: argparse.Namespace, socket: Path) -> int:
+def cmd_profile_apply(args: argparse.Namespace, socket: Path | str) -> int:
     """profile diff / profile load: compare with the device, then write what differs and verify."""
     profile = profiles.load_profile(args.file)
     live = live_settings(socket, args)
@@ -474,7 +478,7 @@ def build_parser() -> argparse.ArgumentParser:
         """The global options work before and after the command (SUPPRESS keeps the first value)."""
         keep = argparse.SUPPRESS
         parser.add_argument("--config", type=Path, default=keep if suppress else None, help="config file, used to find the daemon socket")
-        parser.add_argument("--socket", type=Path, default=keep if suppress else None, help=f"daemon socket (default: from the config, else {DEFAULT_SOCKET_PATH})")
+        parser.add_argument("--socket", type=endpoint_arg, default=keep if suppress else None, help=f"daemon socket, a path or tcp://127.0.0.1:port (default: from the config, else {DEFAULT_SOCKET_PATH})")
         parser.add_argument("--json", action="store_true", default=keep if suppress else False, help="print the raw JSON result")
 
     common = argparse.ArgumentParser(add_help=False)

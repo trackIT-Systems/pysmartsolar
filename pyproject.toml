@@ -8,11 +8,12 @@ authors = [
   {name = "Jonas Höchst", email = "hoechst@trackit.systems"}
 ]
 dynamic = ["version"]
-description = "Daemon and CLI for Victron SmartSolar charge controllers over BLE (Instant Readout and GATT)"
+description = "Daemon and CLI for Victron SmartSolar charge controllers over BLE (Instant Readout and GATT) and VE.Direct"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "bleak>=0.22",
+    "dbus-fast; sys_platform == 'linux'",  # the BlueZ pairing agent (bleak brings it on Linux, too)
     "cbor2",
     "cryptography",
     "paho-mqtt>=2",
@@ -23,7 +24,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
-    "dbus-fast",
+    "dbus-fast; sys_platform == 'linux'",
 ]
 
 [project.urls]

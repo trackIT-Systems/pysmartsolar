@@ -1,9 +1,10 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from fakes import TEST_KEY
-from smartsolar.config import AppConfig, load_config, parse_config
+from smartsolar.config import DEFAULT_SOCKET_PATH, DEFAULT_STATE_DIR, AppConfig, load_config, parse_config
 from smartsolar.errors import ConfigError
 
 
@@ -11,8 +12,8 @@ def test_defaults():
     config = parse_config({})
     assert config == AppConfig()
     assert config.gatt.mode == "off" and config.gatt.passkey == "000000"
-    assert config.daemon.socket == Path("/run/smartsolar/smartsolar.sock") and config.daemon.socket_mode == 0o660
-    assert config.advert.publish_interval_s == 60 and config.daemon.state_dir == Path("/var/lib/smartsolar")
+    assert config.daemon.socket == DEFAULT_SOCKET_PATH and config.daemon.socket_mode == 0o660
+    assert config.advert.publish_interval_s == 60 and config.daemon.state_dir == DEFAULT_STATE_DIR
 
 
 def test_full_config():
@@ -42,7 +43,7 @@ def test_full_config():
         ({"gatt": {"bogus": 1}}, "Unknown key"),
         ({"ble": {"switch_hysteresis_db": -1}}, "switch_hysteresis_db"),
         ({"advert": {"stale_after_s": "soon"}}, "must be a number"),
-        ({"keys": {"not a mac": "00" * 16}}, "not a MAC"),
+        ({"keys": {"not a mac": "00" * 16}}, "not a MAC address, a device UUID"),
         ({"keys": {"AA:BB:CC:DD:EE:FF": "1234"}}, "32 hex digits"),
         ({"keys": {"AA:BB:CC:DD:EE:FF": 12}}, "32 hex digits"),
         ({"keys": []}, "mapping"),
@@ -96,7 +97,8 @@ def test_the_example_config_is_valid_and_equals_the_defaults():
     example = Path(__file__).parents[1] / "config" / "smartsolar.yml"
     config = load_config(example)
     assert config.gatt.mode == "off" and config.keys == {}
-    assert config == AppConfig(path=example)
+    # the example shows the Linux (tsOS) paths; the defaults of other systems differ
+    assert config == replace(AppConfig(path=example), daemon=replace(AppConfig().daemon, socket=Path("/run/smartsolar/smartsolar.sock"), state_dir=Path("/var/lib/smartsolar"), csv=replace(AppConfig().daemon.csv, path=Path("/data"))))
 
 
 def test_the_serial_section_and_ble_off():
@@ -121,3 +123,31 @@ def test_the_serial_section_and_ble_off():
 def test_rejects_serial_and_ble_combinations(raw, message):
     with pytest.raises(ConfigError, match=message):
         parse_config(raw)
+
+
+def test_default_paths_per_platform(tmp_path):
+    from smartsolar.platform import default_paths
+
+    linux = default_paths("linux")
+    assert linux.config == Path("/boot/firmware/smartsolar.yml") and linux.socket == Path("/run/smartsolar/smartsolar.sock") and linux.data_dir == Path("/data")
+    mac = default_paths("darwin", home=tmp_path)
+    assert mac.state_dir == tmp_path / "Library" / "Application Support" / "smartsolar" and mac.socket == mac.state_dir / "smartsolar.sock" and mac.data_dir == mac.state_dir / "data"
+    win = default_paths("win32", env={"PROGRAMDATA": "C:/ProgramData"})
+    assert win.state_dir == Path("C:/ProgramData/smartsolar") and win.socket == "tcp://127.0.0.1:47821" and win.config.name == "smartsolar.yml"
+    assert default_paths("win32", env={}, home=tmp_path).state_dir == tmp_path / "AppData" / "Local" / "smartsolar"
+
+
+def test_the_control_socket_can_be_a_loopback_tcp_endpoint():
+    assert parse_config({"daemon": {"socket": "tcp://127.0.0.1:5000"}}).daemon.socket == "tcp://127.0.0.1:5000"
+    for bad, message in (("tcp://0.0.0.0:5000", "loopback"), ("tcp://[::1]:5000", "tcp://127.0.0.1:port"), ("tcp://example.org:5000", "tcp://127.0.0.1:port"), ("tcp://127.0.0.1:0", "port"), ("tcp://127.0.0.1", "tcp://127.0.0.1:port")):
+        with pytest.raises(ConfigError, match=message):
+            parse_config({"daemon": {"socket": bad}})
+
+
+def test_devices_can_be_named_by_mac_serial_or_uuid():
+    key = TEST_KEY.hex()
+    uuid = "6D2F8A3C-1B4E-4F7A-9C0D-5E8B7A6F1234"
+    config = parse_config({"keys": {"hq22294zgeu": key, uuid: key, "F7:48:18:8A:77:9D": key}, "ble": {"address": "HQ22294ZGEU"}})
+    assert set(config.keys) == {"HQ22294ZGEU", uuid, "F7:48:18:8A:77:9D"} and config.ble.address == "HQ22294ZGEU"
+    with pytest.raises(ConfigError, match="serial number"):
+        parse_config({"ble": {"address": "kitchen"}})

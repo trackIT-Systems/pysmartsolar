@@ -10,9 +10,12 @@ import yaml
 from smartsolar.errors import ConfigError
 from smartsolar.instant import KEY_LEN
 
-DEFAULT_CONFIG_PATH = Path("/boot/firmware/smartsolar.yml")
-DEFAULT_SOCKET_PATH = Path("/run/smartsolar/smartsolar.sock")
-DEFAULT_STATE_DIR = Path("/var/lib/smartsolar")
+from smartsolar.platform import DEFAULTS
+
+DEFAULT_CONFIG_PATH = DEFAULTS.config
+DEFAULT_SOCKET_PATH = DEFAULTS.socket  # a path, or tcp://127.0.0.1:port where there are no Unix sockets
+DEFAULT_STATE_DIR = DEFAULTS.state_dir
+DEFAULT_DATA_DIR = DEFAULTS.data_dir
 GATT_MODES = ("off", "hold", "poll")
 REGISTER_PATHS = ("auto", "serial", "gatt")
 DEFAULT_SERIAL_PORT = "/dev/ttyUSBvd0"
@@ -67,7 +70,7 @@ class SerialConfig:
 @dataclass(frozen=True)
 class CsvConfig:
     enabled: bool = True
-    path: Path = Path("/data")
+    path: Path = DEFAULT_DATA_DIR
 
 
 @dataclass(frozen=True)
@@ -82,7 +85,7 @@ class MqttConfig:
 
 @dataclass(frozen=True)
 class DaemonConfig:
-    socket: Path = DEFAULT_SOCKET_PATH
+    socket: Path | str = DEFAULT_SOCKET_PATH
     socket_mode: int = 0o660
     state_dir: Path = DEFAULT_STATE_DIR
     registers: str = "auto"  # how settings are read and written: auto (the cable if it answers, else GATT), serial, gatt
@@ -156,11 +159,21 @@ def parse_key(text: Any, where: str) -> bytes:
     return bytes.fromhex(text.strip())
 
 
+_MAC_RE = re.compile(r"([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}")
+_UUID_RE = re.compile(r"[0-9A-Fa-f]{8}-([0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}")  # what macOS uses instead of a MAC address
+_SERIAL_RE = re.compile(r"[A-Za-z]{2}\d{4}[A-Za-z0-9]{5}")  # HQ22294ZGEU
+
+
+def is_device_ident(text: Any) -> bool:
+    """A MAC address, a macOS device UUID or a serial number: the ways to name a device."""
+    return isinstance(text, str) and any(r.fullmatch(text.strip()) for r in (_MAC_RE, _UUID_RE, _SERIAL_RE))
+
+
 def parse_keys(raw: dict[str, Any]) -> dict[str, bytes]:
     keys = {}
     for address, text in raw.items():
-        if not isinstance(address, str) or not re.fullmatch(r"([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", address.strip()):
-            raise ConfigError(f"keys: {address!r} is not a MAC address")
+        if not is_device_ident(address):
+            raise ConfigError(f"keys: {address!r} is not a MAC address, a device UUID or a serial number")
         keys[normalise_address(address)] = parse_key(text, f"keys.{address}")
     return keys
 
@@ -219,6 +232,8 @@ def _parse_ble(raw: dict[str, Any]) -> BleConfig:
     d = BleConfig()
     _check_keys(raw, {f.name for f in fields(BleConfig)}, "ble")
     address = _str(raw, "address", d.address, "ble")
+    if address and not is_device_ident(address):
+        raise ConfigError("ble.address must be a MAC address, a device UUID (macOS) or a serial number")
     return BleConfig(
         enabled=_bool(raw, "enabled", d.enabled, "ble"),
         adapter=_str(raw, "adapter", d.adapter, "ble"),
@@ -282,6 +297,17 @@ def _parse_gatt(raw: dict[str, Any]) -> GattConfig:
     )
 
 
+def _parse_socket(value: Any) -> Path | str:
+    """A Unix socket path, or tcp://127.0.0.1:port (the default on Windows, which has no usable Unix sockets)."""
+    text = str(value)
+    if text.startswith("tcp://"):
+        from smartsolar.ipc import parse_endpoint
+
+        parse_endpoint(text)  # raises ConfigError for a bad or non-loopback address
+        return text
+    return Path(text)
+
+
 def _parse_mode(value: Any) -> int:
     if isinstance(value, bool):
         raise ConfigError("daemon.socket_mode must be an octal mode")
@@ -311,7 +337,7 @@ def _parse_daemon(raw: dict[str, Any]) -> DaemonConfig:
     _check_keys(mqtt_raw, {f.name for f in fields(MqttConfig)}, "daemon.mqtt")
     md = MqttConfig()
     return DaemonConfig(
-        socket=Path(_str(raw, "socket", str(d.socket), "daemon") or d.socket),
+        socket=_parse_socket(_str(raw, "socket", str(d.socket), "daemon") or d.socket),
         socket_mode=_parse_mode(raw.get("socket_mode", d.socket_mode)),
         state_dir=Path(_str(raw, "state_dir", str(d.state_dir), "daemon") or d.state_dir),
         registers=registers,

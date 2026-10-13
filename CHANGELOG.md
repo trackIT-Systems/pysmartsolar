@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), the versioning follows [Semantic Versioning](https://semver.org/). Releases are made by pushing a tag `vX.Y.Z` (see [docs/releasing.md](docs/releasing.md)).
 
+## [1.1.0] - 2026-10-13
+
+### Added
+
+- macOS and Windows support (untried with a real charger, tested against fakes in CI): the BLE code only asks bleak, the BlueZ pairing agent is Linux-only, and on macOS and Windows the system pairs (see `docs/platforms.md`).
+- Devices can be named by serial number (`ble.address`, `keys:`), next to MAC addresses and the device UUIDs of macOS. Fetched keys are stored under the serial number.
+- `daemon.socket: tcp://127.0.0.1:port` as a loopback control endpoint (the default on Windows); `--socket` takes it too.
+- Per-platform default paths (config, state, data, socket); shutdown on Ctrl+Break on Windows.
+- CI on Ubuntu, macOS and Windows (Windows reports without failing the build until it has been tried).
+
+### Changed
+
+- `dbus-fast` is only required on Linux. The serial port is only opened with `exclusive` on POSIX.
+
 ## [1.0.0] - 2026-10-13
 
 A rewrite: from a one-shot library to a daemon and a CLI. It breaks with the 0.x API in every way (module, entry points, dependencies, output format), hence 1.0.0. The never released 0.2.0 development line is part of this release.
@@ -50,5 +64,6 @@ Reconstructed from the git history; the version was never tagged and stayed 0.1.
 - A message is printed while pairing (2023-03-06).
 - An error when the number of parameters was inconclusive (2024-02-12).
 
+[1.1.0]: https://github.com/trackIT-System/pysmartsolar/releases/tag/v1.1.0
 [1.0.0]: https://github.com/trackIT-System/pysmartsolar/releases/tag/v1.0.0
 [0.1.0]: https://github.com/trackIT-System/pysmartsolar/commits/main

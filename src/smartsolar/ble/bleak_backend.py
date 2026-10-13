@@ -1,6 +1,14 @@
-"""BleBackend on top of bleak (BlueZ on the Pi).
+"""BleBackend on top of bleak: BlueZ (Linux, the Pi), CoreBluetooth (macOS), WinRT (Windows).
 
 Only API that exists in bleak 0.22 (Debian) and 1.x is used.
+
+Platform differences, all handled here:
+
+* Only BlueZ lets us answer the passkey request (a D-Bus agent, Linux only). On macOS and
+  Windows the operating system pairs by itself and shows its own dialog the first time an
+  encrypted characteristic is used; the passkey from the config is not used there.
+* macOS gives devices a per-host UUID instead of a MAC address (``address`` is that UUID).
+* ``adapter`` selects a BlueZ adapter and means nothing elsewhere.
 
 * One scanner runs all the time for the advertisements. A connect stops it, looks the device
   up again (BlueZ forgets devices it is not scanning for) and restarts it afterwards: BlueZ
@@ -13,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import time
 from collections.abc import Callable
 from typing import Any
@@ -26,6 +35,8 @@ from smartsolar.instant import COMPANY_ID, PREFIX
 from smartsolar.vreg import CHAR_UUIDS
 
 log = logging.getLogger(__name__)
+
+HAS_AGENT = sys.platform.startswith("linux")  # a BlueZ pairing agent over D-Bus
 
 SCANNER_STOP_TIMEOUT_S = 5.0
 DISCONNECT_TIMEOUT_S = 10.0
@@ -94,7 +105,10 @@ class BleakLink:
             await agent.__aexit__(None, None, None)
 
     async def pair(self, passkey: str, timeout_s: float) -> None:
-        """Pair, or confirm an existing bond. Uses the agent registered by ``connect``."""
+        """Pair, or confirm an existing bond. Uses the agent registered by ``connect`` (BlueZ)."""
+        if not HAS_AGENT:
+            await self._pair_by_the_system(timeout_s)
+            return
         if self._agent is None:
             from smartsolar.ble.agent import registered_agent
 
@@ -113,6 +127,20 @@ class BleakLink:
         finally:
             await self._release_agent()
 
+    async def _pair_by_the_system(self, timeout_s: float) -> None:
+        """macOS and Windows: ask the system to pair. It shows its own dialog; our passkey is not used."""
+        try:
+            await asyncio.wait_for(self._client.pair(), timeout_s)
+        except NotImplementedError:
+            # CoreBluetooth cannot be told to pair: the system asks when an encrypted characteristic is first used.
+            log.info("pairing is left to the operating system (it asks for the passkey when needed)")
+        except TimeoutError:
+            raise PairingError(f"pairing did not finish within {timeout_s:g} s (enter the passkey in the system dialog)") from None
+        except Exception as exc:
+            if "already" in str(exc).lower():
+                return
+            raise map_pair_error(exc) from exc
+
     async def disconnect(self) -> None:
         try:
             await self._client.disconnect()
@@ -129,6 +157,9 @@ class BleakBackend:
         self._on_advert: Callable[[Advertisement], None] | None = None
 
     def _kwargs(self) -> dict[str, Any]:
+        if self._adapter and not HAS_AGENT:
+            log.warning("ble.adapter is only used with BlueZ on Linux, ignored here")
+            return {}
         return {"adapter": self._adapter} if self._adapter else {}
 
     # -- scanning -----------------------------------------------------------
@@ -187,7 +218,7 @@ class BleakBackend:
         client = None
         agent = None
         try:
-            if passkey is not None:
+            if passkey is not None and HAS_AGENT:
                 # BlueZ starts pairing by itself while it discovers the services of a device that
                 # requires it, so the agent must be there before the connection is opened.
                 from smartsolar.ble.agent import registered_agent

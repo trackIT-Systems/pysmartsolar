@@ -141,8 +141,8 @@ class Daemon:
             gatt,
             backend,
             lambda: self.tracker.current,
-            lambda address: self.keys.get(address)[0] is not None,
-            self.keys.store,
+            lambda address: self.keys.get(address, self._name(address))[0] is not None,
+            lambda address, key: self.keys.store(address, key, self._name(address)),
             self._on_event,
             self._on_gatt_reading,
             self.gatt_stats,
@@ -162,6 +162,10 @@ class Daemon:
 
     # -- events and state ---------------------------------------------------
 
+    def _name(self, address: str) -> str | None:
+        seen = self.tracker.seen.get(address)
+        return seen.name if seen else None
+
     def _device_id(self, address: str | None) -> str | None:
         """The id a device goes by in outputs: its serial number if known, else its MAC address."""
         if address is None:
@@ -180,7 +184,7 @@ class Daemon:
         self.outputs.emit_state(self.state_payload())
 
     def _on_event(self, event: Event) -> None:
-        if event.device is not None and ":" in event.device:
+        if event.device is not None and event.device in self.tracker.seen:  # an address (MAC or macOS UUID): use the serial
             event = replace(event, device=self._device_id(event.device))
         self.outputs.emit_event(event)
         if event.kind == "key_rejected":
@@ -220,8 +224,7 @@ class Daemon:
     async def run(self, *, handle_signals: bool = True) -> int:
         loop = asyncio.get_running_loop()
         if handle_signals:
-            for sig in (signal.SIGTERM, signal.SIGINT):
-                loop.add_signal_handler(sig, self.stop_event.set)
+            self._install_signal_handlers(loop)
         self._on_event(
             Event(
                 datetime.now().astimezone(),
@@ -255,6 +258,18 @@ class Daemon:
         finally:
             await self._shutdown(tasks, stopper)
         return exit_code
+
+    def _install_signal_handlers(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Stop on SIGTERM and SIGINT. Windows event loops have no add_signal_handler: signal.signal then."""
+        names = ("SIGTERM", "SIGINT", "SIGBREAK")  # SIGBREAK: Ctrl+Break on Windows
+        for name in names:
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                loop.add_signal_handler(sig, self.stop_event.set)
+            except NotImplementedError:
+                signal.signal(sig, lambda *_: loop.call_soon_threadsafe(self.stop_event.set))
 
     async def _shutdown(self, tasks: list[asyncio.Task], stopper: asyncio.Task) -> None:
         log.info("shutting down")
@@ -332,7 +347,7 @@ class Daemon:
         address = self.tracker.current_address
         if address is None:
             return "unknown"
-        key, _ = self.keys.get(address)
+        key, _ = self.keys.get(address, self._name(address))
         if key is None:
             return "missing"
         return "mismatch" if self.tracker._mismatches else ("ok" if self.advert_stats.decoded else "unknown")
@@ -344,7 +359,7 @@ class Daemon:
         seen = tracker.seen.get(tracker.current_address or "")
         device = None
         if current is not None:
-            _, source = self.keys.get(current.address)
+            _, source = self.keys.get(current.address, current.name)
             device = {
                 "address": current.address,
                 "name": current.name,
