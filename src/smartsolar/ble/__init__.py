@@ -62,8 +62,12 @@ class BleBackend(Protocol):
         *,
         timeout_s: float,
         on_disconnect: Callable[[], None],
+        passkey: str | None = None,
     ) -> GattLink:
         """Open a GATT connection. Suspends the scan while connecting and resumes it afterwards.
+
+        With ``passkey`` a pairing agent answering with it is active from before the connection
+        is opened until ``GattLink.pair`` is done (BlueZ may start pairing during service discovery).
 
         Raises ConnectError. Must not leave a half-open connection behind.
         """

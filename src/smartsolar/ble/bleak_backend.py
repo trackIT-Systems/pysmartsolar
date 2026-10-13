@@ -66,9 +66,10 @@ def map_pair_error(exc: BaseException) -> PairingError:
 
 
 class BleakLink:
-    def __init__(self, address: str, client: Any) -> None:
+    def __init__(self, address: str, client: Any, agent: Any = None) -> None:
         self.address = address
         self._client = client
+        self._agent = agent  # the registered pairing agent, until pairing is done
 
     @property
     def is_connected(self) -> bool:
@@ -87,12 +88,20 @@ class BleakLink:
         except (BleakError, EOFError, OSError) as exc:
             raise map_write_error(exc, self.is_connected) from exc
 
-    async def pair(self, passkey: str, timeout_s: float) -> None:
-        from smartsolar.ble.agent import registered_agent
+    async def _release_agent(self) -> None:
+        agent, self._agent = self._agent, None
+        if agent is not None:
+            await agent.__aexit__(None, None, None)
 
+    async def pair(self, passkey: str, timeout_s: float) -> None:
+        """Pair, or confirm an existing bond. Uses the agent registered by ``connect``."""
+        if self._agent is None:
+            from smartsolar.ble.agent import registered_agent
+
+            self._agent = registered_agent(int(passkey))
+            await self._agent.__aenter__()
         try:
-            async with registered_agent(int(passkey)):
-                await asyncio.wait_for(self._client.pair(), timeout_s)
+            await asyncio.wait_for(self._client.pair(), timeout_s)
         except TimeoutError:
             raise PairingError(f"pairing did not finish within {timeout_s:g} s") from None
         except PairingError:
@@ -101,12 +110,16 @@ class BleakLink:
             if dbus_error_name(exc).endswith("AlreadyExists") or "already exists" in str(exc).lower():
                 return  # already bonded
             raise map_pair_error(exc) from exc
+        finally:
+            await self._release_agent()
 
     async def disconnect(self) -> None:
         try:
             await self._client.disconnect()
         except EOFError:
             pass  # bleak/dbus-fast raise this if the connection is already gone
+        finally:
+            await self._release_agent()
 
 
 class BleakBackend:
@@ -161,11 +174,26 @@ class BleakBackend:
 
     # -- connecting ---------------------------------------------------------
 
-    async def connect(self, adv: Advertisement, *, timeout_s: float, on_disconnect: Callable[[], None]) -> BleakLink:
+    async def connect(
+        self,
+        adv: Advertisement,
+        *,
+        timeout_s: float,
+        on_disconnect: Callable[[], None],
+        passkey: str | None = None,
+    ) -> BleakLink:
         scanning = self._scanner is not None
         await self._stop_scanner()
         client = None
+        agent = None
         try:
+            if passkey is not None:
+                # BlueZ starts pairing by itself while it discovers the services of a device that
+                # requires it, so the agent must be there before the connection is opened.
+                from smartsolar.ble.agent import registered_agent
+
+                agent = registered_agent(int(passkey))
+                await agent.__aenter__()
             handle = await BleakScanner.find_device_by_address(adv.address, timeout=LOOKUP_TIMEOUT_S, **self._kwargs())
             if handle is None:
                 raise ConnectError("device not found", not_found=True)
@@ -180,11 +208,14 @@ class BleakBackend:
                 await client.connect()
         except asyncio.CancelledError:
             await self._cleanup(client)
+            await self._drop_agent(agent)
             raise
         except ConnectError:
+            await self._drop_agent(agent)
             raise
         except Exception as exc:
             await self._cleanup(client)
+            await self._drop_agent(agent)
             raise map_connect_error(exc) from exc
         finally:
             if scanning and self._on_advert is not None:
@@ -192,7 +223,15 @@ class BleakBackend:
                     await self._start_scanner()
                 except Exception as exc:
                     log.warning("restarting the scanner failed: %s", exc)
-        return BleakLink(adv.address, client)
+        return BleakLink(adv.address, client, agent)
+
+    @staticmethod
+    async def _drop_agent(agent: Any) -> None:
+        if agent is not None:
+            try:
+                await agent.__aexit__(None, None, None)
+            except Exception as exc:
+                log.debug("dropping the agent: %r", exc)
 
     @staticmethod
     async def _cleanup(client: Any) -> None:

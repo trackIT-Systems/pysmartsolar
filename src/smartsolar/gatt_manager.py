@@ -228,7 +228,10 @@ class GattManager:
                 link = await self._until_stop(
                     asyncio.wait_for(
                         self._backend.connect(
-                            adv, timeout_s=self.cfg.connect_timeout_s, on_disconnect=lambda: self._link_lost(generation)
+                            adv,
+                            timeout_s=self.cfg.connect_timeout_s,
+                            on_disconnect=lambda: self._link_lost(generation),
+                            passkey=self.cfg.passkey,
                         ),
                         self.cfg.connect_timeout_s + CONNECT_GRACE_S,
                     )

@@ -144,6 +144,7 @@ class FakeBackend:
         self.pair_calls: list[str] = []
         self.links: list[FakeLink] = []
         self.scanning_during_connect: list[bool] = []
+        self.connect_passkeys: list[str | None] = []
 
     async def start_scan(self, on_advert: Callable[[Advertisement], None]) -> None:
         self.on_advert = on_advert
@@ -158,7 +159,8 @@ class FakeBackend:
         assert self.on_advert is not None, "scan not started"
         self.on_advert(adv)
 
-    async def connect(self, adv: Advertisement, *, timeout_s: float, on_disconnect: Callable[[], None]) -> FakeLink:
+    async def connect(self, adv: Advertisement, *, timeout_s: float, on_disconnect: Callable[[], None], passkey: str | None = None) -> FakeLink:
+        self.connect_passkeys.append(passkey)
         self.scanning_during_connect.append(self.scanning)  # the real backend stops the scan here
         if self.connect_delay:
             await asyncio.sleep(self.connect_delay)

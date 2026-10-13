@@ -236,3 +236,111 @@ def test_a_failed_connect_cleans_up_and_still_restarts_the_scan(monkeypatch):
         assert err.value.not_found and events[-1] == "scan start"
 
     run(go())
+
+
+def patch_connect_env(monkeypatch, events, *, connect_error=None):
+    """Fake scanner, client and agent that log what the backend does with them."""
+
+    class FakeScanner:
+        def __init__(self, **kw): ...
+
+        async def start(self):
+            events.append("scan start")
+
+        async def stop(self):
+            events.append("scan stop")
+
+    async def find(address, timeout=None, **kw):
+        events.append("lookup")
+        return object()
+
+    FakeScanner.find_device_by_address = staticmethod(find)
+
+    class Client(FakeClient):
+        def __init__(self, handle, **kw):
+            super().__init__()
+
+        async def connect(self):
+            events.append("connect")
+            if connect_error is not None:
+                raise connect_error
+
+        async def pair(self):
+            events.append("pair")
+
+        async def disconnect(self):
+            events.append("client disconnect")
+
+    class Agent:
+        def __init__(self, passkey):
+            self.passkey = passkey
+
+        async def __aenter__(self):
+            events.append(f"agent up {self.passkey}")
+            return self
+
+        async def __aexit__(self, *exc):
+            events.append("agent down")
+            return False
+
+    import smartsolar.ble.agent as agent_module
+
+    monkeypatch.setattr(bb, "BleakScanner", FakeScanner)
+    monkeypatch.setattr(bb, "BleakClient", Client)
+    monkeypatch.setattr(agent_module, "registered_agent", Agent)
+
+
+def test_the_pairing_agent_is_there_before_the_connection_opens_and_until_pairing_is_done(monkeypatch):
+    async def go():
+        events = []
+        patch_connect_env(monkeypatch, events)
+        backend = bb.BleakBackend()
+        from fakes import advert
+
+        link = await backend.connect(advert(), timeout_s=1.0, on_disconnect=lambda: None, passkey="000000")
+        assert events == ["agent up 0", "lookup", "connect"]  # no scanner was running
+        await link.pair("000000", 1.0)
+        assert events[-2:] == ["pair", "agent down"]
+        await link.disconnect()
+        assert events.count("agent down") == 1  # released once
+
+    run(go())
+
+
+def test_the_agent_is_released_by_disconnect_when_pairing_never_ran(monkeypatch):
+    async def go():
+        events = []
+        patch_connect_env(monkeypatch, events)
+        from fakes import advert
+
+        link = await bb.BleakBackend().connect(advert(), timeout_s=1.0, on_disconnect=lambda: None, passkey="123456")
+        assert events[0] == "agent up 123456"
+        await link.disconnect()
+        assert events[-2:] == ["client disconnect", "agent down"]
+
+    run(go())
+
+
+def test_the_agent_is_released_when_the_connect_fails(monkeypatch):
+    async def go():
+        events = []
+        patch_connect_env(monkeypatch, events, connect_error=BleakDBusError("org.bluez.Error.Failed", []))
+        from fakes import advert
+
+        with pytest.raises(ConnectError):
+            await bb.BleakBackend().connect(advert(), timeout_s=1.0, on_disconnect=lambda: None, passkey="000000")
+        assert events == ["agent up 0", "lookup", "connect", "client disconnect", "agent down"]
+
+    run(go())
+
+
+def test_without_a_passkey_no_agent_is_used(monkeypatch):
+    async def go():
+        events = []
+        patch_connect_env(monkeypatch, events)
+        from fakes import advert
+
+        await bb.BleakBackend().connect(advert(), timeout_s=1.0, on_disconnect=lambda: None)
+        assert events == ["lookup", "connect"]
+
+    run(go())

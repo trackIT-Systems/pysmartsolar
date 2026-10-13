@@ -66,7 +66,7 @@ def test_the_configured_passkey_is_used():
     async def go():
         async with Rig("off", have_key=False, passkey="123456") as rig:
             await until(lambda: "key_fetched" in rig.kinds())
-            assert rig.backend.pair_calls == ["123456"]
+            assert rig.backend.pair_calls == ["123456"] and rig.backend.connect_passkeys == ["123456"]
 
     run(go())
 

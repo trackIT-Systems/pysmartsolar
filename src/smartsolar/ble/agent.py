@@ -23,10 +23,12 @@ class PasskeyAgent(ServiceInterface):
 
     @method()
     def RequestPinCode(self, device: "o") -> "s":  # noqa: F821
+        log.debug("pin code requested by BlueZ for %s", device)
         return f"{self._passkey:06d}"
 
     @method()
     def RequestPasskey(self, device: "o") -> "u":  # noqa: F821
+        log.debug("passkey requested by BlueZ for %s", device)
         return self._passkey
 
     @method()
@@ -61,6 +63,7 @@ class registered_agent:
         self._manager = self._bus.get_proxy_object("org.bluez", "/org/bluez", introspection).get_interface("org.bluez.AgentManager1")
         await self._manager.call_register_agent(AGENT_PATH, "KeyboardDisplay")
         await self._manager.call_request_default_agent(AGENT_PATH)
+        log.debug("pairing agent registered")
         return self
 
     async def __aexit__(self, *exc):
