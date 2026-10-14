@@ -40,7 +40,7 @@ Python 3.12+. Linux (BlueZ; the Raspberry Pi with tsOS is the tested platform), 
 
 ```bash
 pip install -e .          # smartsolard, smartsolar
-cp config/smartsolar.yml /boot/firmware/smartsolar.yml
+sudo install -D config/smartsolar.yml /etc/smartsolar/smartsolar.yml
 smartsolard --config config/smartsolar.yml
 ```
 
@@ -52,7 +52,7 @@ The key and the passkey are never logged and never published.
 
 ## Daemon
 
-`smartsolard [--config FILE]`, default config `/boot/firmware/smartsolar.yml`, see [config/smartsolar.yml](config/smartsolar.yml).
+`smartsolard [--config FILE]`, default config `/etc/smartsolar/smartsolar.yml`, see [config/smartsolar.yml](config/smartsolar.yml).
 
 * **Device:** the configured `ble.address`, otherwise the strongest SmartSolar (solar charger records of other Victron devices are listed but never selected). The selection is reviewed every `ble.rescan_interval_s`; another device must be `ble.switch_hysteresis_db` stronger to replace the current one.
 * **Advertisements:** decoded as they arrive; the latest reading is published every `advert.publish_interval_s` (the device sends a new one about once a second). Fields: state, charger error, battery voltage and current, yield today, PV power, load current; values the device reports as not available are `null`.

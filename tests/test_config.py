@@ -129,7 +129,7 @@ def test_default_paths_per_platform(tmp_path):
     from smartsolar.platform import default_paths
 
     linux = default_paths("linux")
-    assert linux.config == Path("/boot/firmware/smartsolar.yml") and linux.socket == Path("/run/smartsolar/smartsolar.sock") and linux.data_dir == Path("/data")
+    assert linux.config == Path("/etc/smartsolar/smartsolar.yml") and linux.socket == Path("/run/smartsolar/smartsolar.sock") and linux.data_dir == Path("/data")
     mac = default_paths("darwin", home=tmp_path)
     assert mac.state_dir == tmp_path / "Library" / "Application Support" / "smartsolar" and mac.socket == mac.state_dir / "smartsolar.sock" and mac.data_dir == mac.state_dir / "data"
     win = default_paths("win32", env={"PROGRAMDATA": "C:/ProgramData"})

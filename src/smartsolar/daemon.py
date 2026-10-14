@@ -591,7 +591,7 @@ class Daemon:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="smartsolard", description="Follow a Victron SmartSolar over BLE and report its values (CSV, MQTT).")
     parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
-    parser.add_argument("--config", type=Path, default=None, help="config file (default: /boot/firmware/smartsolar.yml)")
+    parser.add_argument("--config", type=Path, default=None, help="config file (default: /etc/smartsolar/smartsolar.yml)")
     parser.add_argument("-v", "--verbose", action="count", default=0, help="more log output (-v: DEBUG)")
     args = parser.parse_args(argv)
     try:

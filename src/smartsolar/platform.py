@@ -19,7 +19,7 @@ class Defaults:
 
 
 def default_paths(platform: str | None = None, env: dict[str, str] | None = None, home: Path | None = None) -> Defaults:
-    """Linux (tsOS): /boot/firmware, /var/lib, /run. macOS: ~/Library/Application Support. Windows: %PROGRAMDATA%."""
+    """Linux (tsOS): /etc/smartsolar, /var/lib, /run. macOS: ~/Library/Application Support. Windows: %PROGRAMDATA%."""
     platform = platform or sys.platform
     env = os.environ if env is None else env
     if platform.startswith("win"):
@@ -29,7 +29,7 @@ def default_paths(platform: str | None = None, env: dict[str, str] | None = None
         base = (home or Path.home()) / "Library" / "Application Support" / "smartsolar"
         return Defaults(base / "smartsolar.yml", base, base / "smartsolar.sock", base / "data")
     return Defaults(
-        Path("/boot/firmware/smartsolar.yml"), Path("/var/lib/smartsolar"), Path("/run/smartsolar/smartsolar.sock"), Path("/data")
+        Path("/etc/smartsolar/smartsolar.yml"), Path("/var/lib/smartsolar"), Path("/run/smartsolar/smartsolar.sock"), Path("/data")
     )
 
 

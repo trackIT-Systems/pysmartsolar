@@ -10,7 +10,7 @@
 | Pairing with the passkey | automatic (BlueZ agent) | the system asks | the system asks |
 | Device names in the config | MAC, serial | UUID, serial | MAC, serial |
 | Control socket | Unix socket | Unix socket | `tcp://127.0.0.1:47821` |
-| Default paths | `/boot/firmware`, `/var/lib/smartsolar`, `/run/smartsolar`, `/data` | `~/Library/Application Support/smartsolar` | `%PROGRAMDATA%\smartsolar` |
+| Default paths | `/etc/smartsolar`, `/var/lib/smartsolar`, `/run/smartsolar`, `/data` | `~/Library/Application Support/smartsolar` | `%PROGRAMDATA%\smartsolar` |
 
 An example config for macOS with the paths and notes below is [config/smartsolar.macos.yml](../config/smartsolar.macos.yml). `~` is expanded in `daemon.socket`, `daemon.state_dir` and `daemon.csv.path`.
 

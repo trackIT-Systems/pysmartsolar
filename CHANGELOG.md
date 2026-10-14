@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), the versioning follows [Semantic Versioning](https://semver.org/). Releases are made by pushing a tag `vX.Y.Z` (see [docs/releasing.md](docs/releasing.md)).
 
+## [Unreleased]
+
+### Changed
+
+- The default config file on Linux is `/etc/smartsolar/smartsolar.yml` (was `/boot/firmware/smartsolar.yml`). A system that keeps the file elsewhere passes `--config`.
+
 ## [1.2.0] - 2026-10-14
 
 ### Added
