@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), the versioning follows [Semantic Versioning](https://semver.org/). Releases are made by pushing a tag `vX.Y.Z` (see [docs/releasing.md](docs/releasing.md)).
 
+## [1.1.1] - 2026-10-14
+
+### Changed
+
+- A VE.Direct cable that is not there (or goes away) is reported once, at INFO and as one `serial_lost` event, instead of at every retry (every 2 to 60 s). A different failure is reported again; the next successful open starts over. A system can therefore leave `serial.enabled: true` for the case that a cable is attached.
+
 ## [1.1.0] - 2026-10-13
 
 ### Added
@@ -64,6 +70,7 @@ Reconstructed from the git history; the version was never tagged and stayed 0.1.
 - A message is printed while pairing (2023-03-06).
 - An error when the number of parameters was inconclusive (2024-02-12).
 
+[1.1.1]: https://github.com/trackIT-System/pysmartsolar/releases/tag/v1.1.1
 [1.1.0]: https://github.com/trackIT-System/pysmartsolar/releases/tag/v1.1.0
 [1.0.0]: https://github.com/trackIT-System/pysmartsolar/releases/tag/v1.0.0
 [0.1.0]: https://github.com/trackIT-System/pysmartsolar/commits/main
