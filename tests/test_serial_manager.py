@@ -104,6 +104,24 @@ def test_a_missing_port_is_retried_until_it_appears():
     run(go())
 
 
+def test_a_missing_cable_is_reported_once_not_at_every_retry(caplog):
+    async def go():
+        with caplog.at_level("INFO"):
+            async with running() as s:
+                await until(lambda: len(s.opener.opened) >= 5)
+                assert s.kinds().count("serial_lost") == 1
+                assert sum("cannot open" in r.message for r in caplog.records) == 1  # the retries are DEBUG
+                dev = FakeSerial()
+                s.opener.devices.append(dev)
+                await until(lambda: s.manager.connected)
+                dev.unplug()
+                await until(lambda: s.kinds().count("serial_lost") == 3)  # the loss, then the port missing: each reported once
+                await until(lambda: len(s.opener.opened) >= 9)
+                assert s.kinds().count("serial_lost") == 3
+
+    run(go())
+
+
 def test_registers_are_read_in_the_ble_layout():
     async def go():
         dev = FakeSerial()

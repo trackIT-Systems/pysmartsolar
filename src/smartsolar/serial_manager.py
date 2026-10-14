@@ -57,6 +57,7 @@ class SerialManager:
         self._parser = StreamParser()
         self._lock = asyncio.Lock()
         self._waiter: tuple[Callable[[HexFrame], bool], asyncio.Future] | None = None
+        self._reported: str | None = None  # the last failure that was logged and published; repeats are only retried
         self.state = "closed"  # closed | open | backoff
         self.serial: str | None = None
         self.product_id: int | None = None
@@ -93,6 +94,7 @@ class SerialManager:
                 continue
             self._link = link
             self._parser = StreamParser()
+            self._reported = None
             self.state = "open"
             self.stats.opens += 1
             log.info("serial port %s open", self.cfg.port)
@@ -113,8 +115,12 @@ class SerialManager:
         self.stats.last_error = message
         delay = self.stats.backoff_s = self._backoff.next()
         self.state = "backoff"
-        log.info("serial port %s: %s (retry in %.1f s)", self.cfg.port, message, delay)
-        self._event("serial_lost", port=self.cfg.port, error=message, retry_in_s=round(delay, 1))
+        # A cable that is not there is retried for ever: say it once, not at every attempt
+        repeated = message == self._reported
+        self._reported = message
+        log.log(logging.DEBUG if repeated else logging.INFO, "serial port %s: %s (retry in %.1f s)", self.cfg.port, message, delay)
+        if not repeated:
+            self._event("serial_lost", port=self.cfg.port, error=message, retry_in_s=round(delay, 1))
         await asyncio.sleep(delay)
 
     async def _read_loop(self, link: SerialLink) -> None:
