@@ -9,6 +9,7 @@ from fakes import run
 from smartsolar import serial_link
 from smartsolar.config import AppConfig
 from smartsolar.daemon import Daemon
+from smartsolar.outputs import Outputs
 
 
 def test_signal_handlers_fall_back_to_signal_signal_where_the_loop_has_none(monkeypatch):
@@ -24,7 +25,7 @@ def test_signal_handlers_fall_back_to_signal_signal_where_the_loop_has_none(monk
     monkeypatch.setattr(signal, "signal", lambda sig, handler: installed.__setitem__(sig, handler))
 
     async def go():
-        daemon = Daemon(AppConfig(), backend=object())
+        daemon = Daemon(AppConfig(), backend=object(), outputs=Outputs([]))
         daemon._install_signal_handlers(WindowsLoop())
         assert signal.SIGINT in installed
         installed[signal.SIGINT](signal.SIGINT, None)
@@ -41,7 +42,7 @@ def test_signal_handlers_use_the_loop_where_it_can(monkeypatch):
             seen.append(sig)
 
     async def go():
-        Daemon(AppConfig(), backend=object())._install_signal_handlers(Loop())
+        Daemon(AppConfig(), backend=object(), outputs=Outputs([]))._install_signal_handlers(Loop())
 
     run(go())
     assert signal.SIGINT in seen

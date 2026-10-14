@@ -155,6 +155,7 @@ def test_devices_can_be_named_by_mac_serial_or_uuid():
 
 def test_the_macos_example_config_is_valid_and_has_the_macos_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     example = Path(__file__).parents[1] / "config" / "smartsolar.macos.yml"
     config = load_config(example)
     base = tmp_path / "Library" / "Application Support" / "smartsolar"

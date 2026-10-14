@@ -21,6 +21,14 @@ B = "E1:22:33:44:55:66"
 ACK = bytes.fromhex("f901")
 
 
+def free_port() -> int:
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
 def run(coro):
     return asyncio.run(coro)
 

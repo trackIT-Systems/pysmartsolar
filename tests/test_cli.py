@@ -1,6 +1,8 @@
 import asyncio
 import json
+import os
 import shutil
+import sys
 import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
@@ -8,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from fakes import TEST_KEY, advert_data
+from fakes import TEST_KEY, advert_data, free_port
 from smartsolar import cli
 from smartsolar.errors import NoDataError
 from smartsolar.server import ControlServer
@@ -116,8 +118,8 @@ class StubDaemon:
     """A real ControlServer with canned handlers, in a background thread."""
 
     def __init__(self, handlers):
-        self.dir = Path(tempfile.mkdtemp(dir="/tmp", prefix="ss-"))
-        self.sock = self.dir / "s.sock"
+        self.dir = Path(tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None, prefix="ss-"))
+        self.sock = f"tcp://127.0.0.1:{free_port()}" if sys.platform.startswith("win") else self.dir / "s.sock"
         self.calls = []
         self.handlers = {name: self._wrap(name, h) for name, h in handlers.items()}
         self.loop = asyncio.new_event_loop()
@@ -216,7 +218,11 @@ def test_daemon_errors_give_exit_code_1(capsys):
 
 
 def test_unreachable_daemon_gives_exit_code_3(capsys, tmp_path):
-    assert cli.main(["--socket", "/tmp/smartsolar-test-none.sock", "status"]) == 3
+    assert cli.main(["--socket", f"tcp://127.0.0.1:{free_port()}", "status"]) == 3
+    assert "is smartsolard running" in capsys.readouterr().err
+    if sys.platform.startswith("win"):
+        return  # no Unix sockets
+    assert cli.main(["--socket", f"/tmp/smartsolar-none-{os.getpid()}.sock", "status"]) == 3  # a short path: macOS limits it
     assert "is smartsolard running" in capsys.readouterr().err
     assert cli.main(["--socket", str(tmp_path / ("x" * 120) / "none.sock"), "status"]) == 3
     assert "cannot connect" in capsys.readouterr().err

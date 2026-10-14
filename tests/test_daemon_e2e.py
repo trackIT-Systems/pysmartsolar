@@ -12,7 +12,7 @@ from pathlib import Path
 import cbor2
 import pytest
 
-from fakes import A, B, TEST_KEY, FakeBackend, FakeMqtt, FakeSerialOpener, advert, run, until
+from fakes import A, B, TEST_KEY, FakeBackend, FakeMqtt, FakeSerialOpener, advert, free_port, run, until
 from smartsolar import daemon as daemon_module
 from smartsolar import ipc
 from smartsolar.config import AdvertConfig, AppConfig, BleConfig, CsvConfig, DaemonConfig, GattConfig, MqttConfig, SerialConfig
@@ -23,12 +23,6 @@ from smartsolar.outputs.csv import CsvOutput
 from smartsolar.outputs.mqtt import MqttOutput
 
 TOPIC = "tracker/smartsolar/f748188a779d"
-
-
-def free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
 
 
 class Env:

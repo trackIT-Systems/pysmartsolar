@@ -101,7 +101,7 @@ def request(
     except FileNotFoundError:
         raise DaemonUnreachable(f"no daemon socket at {socket_path} (is smartsolard running?)") from None
     except ConnectionRefusedError:
-        raise DaemonUnreachable(f"daemon not accepting connections at {socket_path}") from None
+        raise DaemonUnreachable(f"daemon not accepting connections at {socket_path} (is smartsolard running?)") from None
     except PermissionError:
         raise DaemonUnreachable(f"no permission to use {socket_path}") from None
     except TimeoutError:

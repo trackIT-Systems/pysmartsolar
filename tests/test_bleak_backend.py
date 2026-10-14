@@ -11,6 +11,19 @@ from smartsolar.vreg import CHAR_UUIDS
 from fakes import A, advert_data, run
 
 
+def agent_module(monkeypatch):
+    """smartsolar.ble.agent needs dbus-fast (Linux only): elsewhere a stand-in module takes its place."""
+    try:
+        import smartsolar.ble.agent as module
+    except ModuleNotFoundError:
+        import sys
+        import types
+
+        module = types.ModuleType("smartsolar.ble.agent")
+        monkeypatch.setitem(sys.modules, "smartsolar.ble.agent", module)
+    return module
+
+
 @pytest.fixture(autouse=True)
 def bluez(monkeypatch):
     """The tests below describe the BlueZ path (pairing agent); the other systems are tested at the end."""
@@ -107,9 +120,7 @@ def test_pair_treats_an_existing_bond_as_success(monkeypatch):
             async def __aexit__(self, *exc):
                 return False
 
-        import smartsolar.ble.agent as agent
-
-        monkeypatch.setattr(agent, "registered_agent", NoAgent)
+        monkeypatch.setattr(agent_module(monkeypatch), "registered_agent", NoAgent, raising=False)
         await link.pair("000000", 1.0)  # no error
         client.pair_result = BleakDBusError("org.bluez.Error.AuthenticationFailed", [])
         with pytest.raises(PairingError, match="passkey"):
@@ -290,11 +301,9 @@ def patch_connect_env(monkeypatch, events, *, connect_error=None):
             events.append("agent down")
             return False
 
-    import smartsolar.ble.agent as agent_module
-
     monkeypatch.setattr(bb, "BleakScanner", FakeScanner)
     monkeypatch.setattr(bb, "BleakClient", Client)
-    monkeypatch.setattr(agent_module, "registered_agent", Agent)
+    monkeypatch.setattr(agent_module(monkeypatch), "registered_agent", Agent, raising=False)
 
 
 def test_the_pairing_agent_is_there_before_the_connection_opens_and_until_pairing_is_done(monkeypatch):
