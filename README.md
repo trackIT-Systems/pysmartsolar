@@ -1,6 +1,6 @@
 # smartsolar
 
-[![Tests](https://github.com/trackIT-System/pysmartsolar/actions/workflows/ci.yml/badge.svg)](https://github.com/trackIT-System/pysmartsolar/actions/workflows/ci.yml)
+[![Tests](https://github.com/trackIT-Systems/pysmartsolar/actions/workflows/ci.yml/badge.svg)](https://github.com/trackIT-Systems/pysmartsolar/actions/workflows/ci.yml)
 
 A daemon and a CLI for Victron SmartSolar charge controllers over Bluetooth Low Energy and over the VE.Direct cable, for autonomous sensor nodes (Raspberry Pi). `smartsolard` follows one SmartSolar permanently and reports its values to a CSV file and to MQTT (JSON and CBOR). `smartsolar` talks to the running daemon: cached and live values, key, reconnect, scan, settings.
 
