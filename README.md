@@ -83,7 +83,7 @@ smartsolar decode --key HEX DATA   decode one advertisement offline
 smartsolar vregs [--writable]      the registers decoded over GATT, or the ones `write` can change
 ```
 
-`--json` prints the raw result, `--socket` / `--config` select the daemon. Exit codes: 0 ok, 1 daemon error, 2 usage error, 3 daemon unreachable. The CLI and the daemon talk newline-delimited JSON over a Unix socket (`daemon.socket`).
+`--json` prints the raw result, `--socket` / `--config` select the daemon. Exit codes: 0 ok, 1 daemon error, 2 usage error, 3 daemon unreachable. The CLI and the daemon talk newline-delimited JSON over a Unix socket (`daemon.socket`); the commands, arguments and results are documented in [docs/control-socket.md](docs/control-socket.md).
 
 ## Writing
 
