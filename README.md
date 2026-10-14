@@ -152,7 +152,7 @@ Semantic versioning; releases are made by pushing a tag `vX.Y.Z`, see [docs/rele
 
 ## Credits
 
-* The **Instant Readout** format is described in Victron's published documentation. The community project [victron-ble](https://github.com/keshavdv/victron-ble) (Keshav Varma) implements the same decoding in Python and was the reference for the AES-CTR layout; `smartsolar` has its own implementation (see [docs/instant-readout.md](docs/instant-readout.md)).
+* The **Instant Readout** format is described in Victron's published documentation. The community project [victron-ble](https://github.com/keshavdv/victron-ble) is a Python implementation of the same decoding and a useful cross-reference for the AES-CTR layout; `smartsolar` has its own implementation (see [docs/instant-readout.md](docs/instant-readout.md)).
 * The **VE.Direct** registers and encodings are from Victron's "VE.Direct protocol, BlueSolar and SmartSolar MPPT chargers" (rev 18).
 * The **GATT protocol** was derived from Bluetooth traces of the VictronConnect app and tests on a real charger; what is understood and what is replayed blindly is in [docs/gatt-protocol.md](docs/gatt-protocol.md) and [docs/unknowns.md](docs/unknowns.md).
 * Developed by the trackIT Systems team for the tsOS sensor platform. The first versions (0.x, 2022-2024) were a one-shot BLE query library by Jonas Höchst.

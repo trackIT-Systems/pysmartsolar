@@ -32,7 +32,7 @@ Panel voltage, charger temperature, total yield, yesterday's values, firmware, l
 ## References
 
 * Victron's published description of the Instant Readout advertisements (manufacturer data, company id `0x02E1`).
-* The community project [victron-ble](https://github.com/keshavdv/victron-ble) decodes the same records for many Victron devices and was the reference for the encryption layout. `smartsolar` uses its own code and only handles the solar charger record.
+* The community project [victron-ble](https://github.com/keshavdv/victron-ble) decodes the same records for many Victron devices and is a cross-reference for the encryption layout. `smartsolar` uses its own code and only handles the solar charger record.
 
 ## Measured
 
