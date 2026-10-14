@@ -57,6 +57,8 @@ A rewrite: from a one-shot library to a daemon and a CLI. It breaks with the 0.x
 
 ### Fixed
 
+- Pairing failed sometimes ([#1](https://github.com/trackIT-Systems/pysmartsolar/issues/1)): BlueZ starts pairing by itself while it discovers the services of a device that requires it, so the pairing agent has to be registered *before* the connection is opened (registered only around `pair()` it fails with `AuthenticationFailed`). The agent is now registered first. The readings no longer depend on pairing at all, because the Instant Readout advertisements are the main data source.
+- A Raspberry Pi 4 did not connect to the device, `Page Timeout` ([#2](https://github.com/trackIT-Systems/pysmartsolar/issues/2)): on the Raspberry Pi the Wi-Fi and Bluetooth radios share one chip, and with the 2.4 GHz access point up a connection is mostly lost within a second. The daemon reads the advertisements (no connection); GATT is optional and retried with backoff.
 - GATT connections failed on tsOS with the 2.4 GHz access point up (0 usable links in 26 attempts); the advertisements are now the main source.
 - Pairing failed with `AuthenticationFailed` when the agent was registered only around `pair()`; it is registered before the connection is opened.
 
