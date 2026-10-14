@@ -29,6 +29,11 @@ The upper 7 bits of the load current word are not used by the decoder and are no
 
 Panel voltage, charger temperature, total yield, yesterday's values, firmware, load output state and everything else need GATT or the VE.Direct cable.
 
+## References
+
+* Victron's published description of the Instant Readout advertisements (manufacturer data, company id `0x02E1`).
+* The community project [victron-ble](https://github.com/keshavdv/victron-ble) decodes the same records for many Victron devices and was the reference for the encryption layout. `smartsolar` uses its own code and only handles the solar charger record.
+
 ## Measured
 
 * With the Wi-Fi access point of the Raspberry Pi up, advertisements keep arriving: 2447 of 2447 decrypted in 10 minutes, gaps up to 22 s. This is why they are the main data path.

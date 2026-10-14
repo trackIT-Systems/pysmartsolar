@@ -8,7 +8,7 @@
   device pushes.
 * ``poll``: connects every ``poll_interval_s``, collects the values, publishes them and disconnects.
 
-While the Wi-Fi access point is up on 2.4 GHz, opening a connection mostly fails (see the wiki),
+While the Wi-Fi access point is up on 2.4 GHz, opening a connection mostly fails (see docs/quirks.md),
 so failed attempts are retried with a jittered, growing delay. Nothing here touches Wi-Fi.
 """
 

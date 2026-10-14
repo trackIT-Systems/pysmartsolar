@@ -1,6 +1,6 @@
 """The Victron GATT protocol: record stream, requests and the registers (VREGs) we decode.
 
-Reverse engineered, see the wiki page "Victron SmartSolar BLE readout". The service
+Reverse engineered, see docs/gatt-protocol.md and docs/unknowns.md. The service
 ``306b0001-b081-4037-83dc-e59fcc3cdfd0`` has three characteristics, which we call 0021
 (control, also carries the ``f901`` acknowledgements), 0024 and 0027 (data). Data is a
 byte stream of records::

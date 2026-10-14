@@ -13,7 +13,7 @@ A GATT connection to a SmartSolar is unusable while the Raspberry Pi's 2.4 GHz W
 * The advertisements are always the main data source. No connection, no pairing.
 * GATT is optional (`gatt.mode`) for the values that are not in the advertisements (firmware, uptime, load output, ...), and it fetches the Instant Readout key once if you did not configure it.
 
-The measurements are in the trackIT wiki ("Victron SmartSolar BLE readout").
+The measurements behind this, and everything else that was found out about the device, are in [docs/](docs/README.md), starting with [docs/quirks.md](docs/quirks.md).
 
 ## VE.Direct cable
 
@@ -152,4 +152,7 @@ Semantic versioning; releases are made by pushing a tag `vX.Y.Z`, see [docs/rele
 
 ## Credits
 
-The Instant Readout format follows Victron's published documentation. The GATT protocol was derived from a Bluetooth trace of the VictronConnect app and from the community work referenced in the wiki.
+* The **Instant Readout** format is described in Victron's published documentation. The community project [victron-ble](https://github.com/keshavdv/victron-ble) (Keshav Varma) implements the same decoding in Python and was the reference for the AES-CTR layout; `smartsolar` has its own implementation (see [docs/instant-readout.md](docs/instant-readout.md)).
+* The **VE.Direct** registers and encodings are from Victron's "VE.Direct protocol, BlueSolar and SmartSolar MPPT chargers" (rev 18).
+* The **GATT protocol** was derived from Bluetooth traces of the VictronConnect app and tests on a real charger; what is understood and what is replayed blindly is in [docs/gatt-protocol.md](docs/gatt-protocol.md) and [docs/unknowns.md](docs/unknowns.md).
+* Developed by the trackIT Systems team for the tsOS sensor platform. The first versions (0.x, 2022-2024) were a one-shot BLE query library by Jonas Höchst.
