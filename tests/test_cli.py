@@ -17,7 +17,7 @@ NOW = datetime(2026, 10, 13, 12, 0, 0, tzinfo=timezone.utc)
 VALUE = {"name": "battery_voltage", "friendly": "Battery voltage", "unit": "V", "value": 13.31}
 BLOCK_OK = {"interval": None, "enabled": True, "stale_after_s": 120, "last_ok": None, "age_s": 3.2, "stale": False, "last_error": None}
 STATUS = {
-    "version": "1.1.1",
+    "version": "1.2.0",
     "uptime_s": 7500,
     "device": {
         "address": "F7:48:18:8A:77:9D", "name": "SmartSolar HQ22294ZGEU", "rssi": -47, "model": "0xa053", "pinned": False,
@@ -58,7 +58,7 @@ def test_format_status_advert_only():
     assert lines["key"] == "config, ok"
     assert lines["advert"] == "ok 3s ago   245/min, 1195 decoded, 5 rejected"
     assert lines["gatt"] == "off"
-    assert "gatt data" not in lines and lines["daemon"] == "smartsolard 1.1.1, up 2h05m"
+    assert "gatt data" not in lines and lines["daemon"] == "smartsolard 1.2.0, up 2h05m"
 
 
 def test_format_status_poll_and_hold():
@@ -161,7 +161,7 @@ def test_status_command(capsys):
     with StubDaemon({"status": STATUS}) as d:
         assert run_cli(d, "status") == 0
     out = capsys.readouterr().out
-    assert "F7:48:18:8A:77:9D" in out and "smartsolard 1.1.1" in out
+    assert "F7:48:18:8A:77:9D" in out and "smartsolard 1.2.0" in out
 
 
 def test_json_flag_works_before_and_after_the_command(capsys):

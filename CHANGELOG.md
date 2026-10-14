@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), the versioning follows [Semantic Versioning](https://semver.org/). Releases are made by pushing a tag `vX.Y.Z` (see [docs/releasing.md](docs/releasing.md)).
 
+## [1.2.0] - 2026-10-14
+
+### Added
+
+- `serial.port` can be a pattern such as `/dev/ttyUSBvd*` (the new default): the first match, by index, is used and looked up again at every open, so a cable that is plugged in later, or shows up under another index, is found. The daemon still follows one device.
+
 ## [1.1.1] - 2026-10-14
 
 ### Changed
@@ -70,6 +76,7 @@ Reconstructed from the git history; the version was never tagged and stayed 0.1.
 - A message is printed while pairing (2023-03-06).
 - An error when the number of parameters was inconclusive (2024-02-12).
 
+[1.2.0]: https://github.com/trackIT-System/pysmartsolar/releases/tag/v1.2.0
 [1.1.1]: https://github.com/trackIT-System/pysmartsolar/releases/tag/v1.1.1
 [1.1.0]: https://github.com/trackIT-System/pysmartsolar/releases/tag/v1.1.0
 [1.0.0]: https://github.com/trackIT-System/pysmartsolar/releases/tag/v1.0.0

@@ -73,3 +73,33 @@ def test_a_missing_port_is_reported_as_not_found(monkeypatch):
         assert err.value.not_found
 
     run(go())
+
+
+def test_a_port_pattern_picks_the_lowest_index_and_is_looked_up_again(tmp_path):
+    from smartsolar.errors import ConnectError
+
+    pattern = str(tmp_path / "ttyUSBvd*")
+    with pytest.raises(ConnectError, match="no serial port matches") as err:
+        serial_link.resolve_port(pattern)
+    assert err.value.not_found
+    for name in ("ttyUSBvd10", "ttyUSBvd2"):
+        (tmp_path / name).touch()
+    assert serial_link.resolve_port(pattern) == str(tmp_path / "ttyUSBvd2")  # 2 before 10
+    (tmp_path / "ttyUSBvd1").touch()
+    assert serial_link.resolve_port(pattern) == str(tmp_path / "ttyUSBvd1")  # a later cable is found
+    assert serial_link.resolve_port("COM3") == "COM3" and serial_link.resolve_port("/dev/cu.usbserial-1") == "/dev/cu.usbserial-1"
+
+
+def test_opening_a_pattern_opens_the_match(monkeypatch, tmp_path):
+    import serial
+
+    opened = {}
+
+    class Port:
+        def __init__(self, name, baud, **options):
+            opened["name"] = name
+
+    monkeypatch.setattr(serial, "Serial", Port)
+    (tmp_path / "ttyUSBvd3").touch()
+    run(serial_link.open_pyserial(str(tmp_path / "ttyUSBvd*"), 19200))
+    assert opened["name"] == str((tmp_path / "ttyUSBvd3").resolve())

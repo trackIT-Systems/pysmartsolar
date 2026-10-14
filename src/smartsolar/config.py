@@ -18,7 +18,7 @@ DEFAULT_STATE_DIR = DEFAULTS.state_dir
 DEFAULT_DATA_DIR = DEFAULTS.data_dir
 GATT_MODES = ("off", "hold", "poll")
 REGISTER_PATHS = ("auto", "serial", "gatt")
-DEFAULT_SERIAL_PORT = "/dev/ttyUSBvd0"
+DEFAULT_SERIAL_PORT = "/dev/ttyUSBvd*"  # the symlinks of the udev rule of tsOS (ttyUSBvd<n> for ttyUSB<n>)
 
 
 @dataclass(frozen=True)

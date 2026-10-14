@@ -39,7 +39,7 @@ serial:
   # cable also reads and writes settings (smartsolar write / profile load). Only one program may
   # read the port: do not enable this while another reader (e.g. mqttutil's vedirect) uses it.
   enabled: false
-  port: /dev/ttyUSBvd0
+  port: /dev/ttyUSBvd*             # a port, or a pattern: the first match is used (re-checked at every open)
   baud: 19200
   publish_interval_s: 60
   stale_after_s: 10

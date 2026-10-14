@@ -1,6 +1,6 @@
 # VE.Direct cable (serial)
 
-19200 baud, 8N1, through an FTDI cable (`0403:6001`, `/dev/ttyUSBvd0` on tsOS). Two protocols share the line.
+19200 baud, 8N1, through an FTDI cable (`0403:6001`, `/dev/ttyUSBvd<n>` on tsOS). Two protocols share the line.
 
 ## Text blocks
 

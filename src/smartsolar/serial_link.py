@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import glob
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Protocol
@@ -77,11 +79,27 @@ class PySerialLink:
             log.debug("closing the serial port: %s", exc)
 
 
+def resolve_port(port: str) -> str:
+    """``port`` itself, or for a pattern such as /dev/ttyUSBvd* the first port that matches.
+
+    The match is looked for at every open, so a cable that is plugged in later (or into another
+    USB port, under another index) is found. With several matches the lowest index wins: the
+    daemon follows one device.
+    """
+    if not any(c in port for c in "*?["):
+        return port
+    matches = sorted(glob.glob(port), key=lambda p: [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", p)])
+    if not matches:
+        raise ConnectError(f"no serial port matches {port}", not_found=True)
+    return matches[0]
+
+
 async def open_pyserial(port: str, baud: int) -> SerialLink:
-    """Open ``port`` (symlinks such as /dev/ttyUSBvd0 are resolved) for exclusive use: a second
-    reader would take bytes away from us and corrupt both."""
+    """Open ``port`` (a pattern is resolved, symlinks such as /dev/ttyUSBvd0 are followed) for
+    exclusive use: a second reader would take bytes away from us and corrupt both."""
     import serial
 
+    port = resolve_port(port)
     path = Path(port)
     real = str(path.resolve()) if path.exists() else port  # not for COM3 and the like
     # exclusive is POSIX only; Windows opens a COM port exclusively anyway

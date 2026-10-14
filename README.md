@@ -17,12 +17,12 @@ The measurements are in the trackIT wiki ("Victron SmartSolar BLE readout").
 
 ## VE.Direct cable
 
-Some systems have the charger on a VE.Direct cable (FTDI USB, `/dev/ttyUSBvd0` on tsOS), with or without Bluetooth. The daemon can use either interface or both; each is its own block of readings (`source` in MQTT, `block` in the CSV): `advert`, `gatt` and `vedirect`.
+Some systems have the charger on a VE.Direct cable (FTDI USB, `/dev/ttyUSBvd<n>` on tsOS), with or without Bluetooth. The daemon can use either interface or both; each is its own block of readings (`source` in MQTT, `block` in the CSV): `advert`, `gatt` and `vedirect`.
 
 ```yaml
 serial:
   enabled: true
-  port: /dev/ttyUSBvd0
+  port: /dev/ttyUSBvd*    # a port, or a pattern: the first match (lowest index) is used, looked up at every open
 ble:
   enabled: false          # a system without Bluetooth: nothing of the BLE stack is started
 ```
