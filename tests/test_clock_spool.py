@@ -17,6 +17,10 @@ def local(*args):
     return datetime(*args).astimezone()
 
 
+# A wrong clock before the sync (fake-hwclock's last saved time, say)
+WRONG = local(2020, 1, 1).timestamp()
+
+
 def reading(clock, voltage=24.0):
     """A reading stamped like the sources stamp it, with the fake clock's times."""
     value = Value("battery_voltage", "Battery voltage", "V", voltage)
@@ -28,18 +32,18 @@ def files_dir(tmp_path):
 
 
 def lines(path):
-    return path.read_text().splitlines()
+    return path.read_text(encoding="utf-8").splitlines()
 
 
 def test_unsynced_readings_wait_in_the_spool(tmp_path):
-    clock = FakeClock(local(1970, 1, 1, 0, 5).timestamp())
+    clock = FakeClock(local(2020, 1, 1, 0, 5).timestamp())
     out = CsvOutput(tmp_path, "tracker", clock=clock)
     out.emit_reading(reading(clock))
     assert out.spool.exists() and not list(files_dir(tmp_path).glob("*.csv"))
 
 
 def test_the_sync_retimes_the_spool_by_boottime_and_writes_it_first(tmp_path):
-    clock = FakeClock(local(1970, 1, 1, 0, 5).timestamp(), boottime=100)
+    clock = FakeClock(local(2020, 1, 1, 0, 5).timestamp(), boottime=100)
     out = CsvOutput(tmp_path, "tracker", clock=clock)
     out.emit_reading(reading(clock, 1.0))
     clock.advance(60)
@@ -58,7 +62,7 @@ def test_the_sync_retimes_the_spool_by_boottime_and_writes_it_first(tmp_path):
 
 
 def test_a_spool_spanning_midnight_is_split_by_day(tmp_path):
-    clock = FakeClock(0.0, boottime=10)
+    clock = FakeClock(WRONG, boottime=10)
     out = CsvOutput(tmp_path, "tracker", clock=clock)
     out.emit_reading(reading(clock))
     clock.advance(120)
@@ -70,7 +74,7 @@ def test_a_spool_spanning_midnight_is_split_by_day(tmp_path):
 
 
 def test_a_restart_before_the_sync_continues_the_same_spool(tmp_path):
-    clock = FakeClock(0.0)
+    clock = FakeClock(WRONG)
     CsvOutput(tmp_path, "tracker", clock=clock).emit_reading(reading(clock))
     out = CsvOutput(tmp_path, "tracker", clock=clock)
     out.emit_reading(reading(clock))
@@ -78,18 +82,18 @@ def test_a_restart_before_the_sync_continues_the_same_spool(tmp_path):
 
 
 def test_spools_of_earlier_boots_become_unsynced_files(tmp_path):
-    old = FakeClock(local(1970, 1, 1).timestamp(), boot_id="boot-a")
+    old = FakeClock(local(2020, 1, 1).timestamp(), boot_id="boot-a")
     CsvOutput(tmp_path, "tracker", clock=old).emit_reading(reading(old))
 
-    out = CsvOutput(tmp_path, "tracker", clock=FakeClock(0.0, boot_id="boot-b"))
+    out = CsvOutput(tmp_path, "tracker", clock=FakeClock(WRONG, boot_id="boot-b"))
     assert not list(out.spool_dir.glob("*.jsonl"))
     rows = lines(files_dir(tmp_path) / "tracker_unsynced_boot-a_smartsolar.csv")
     assert rows[0].startswith("time;synced;device;")
-    assert rows[1].startswith(f"{local(1970, 1, 1).isoformat()};False;{MAC};") and rows[1].split(";")[VOLTAGE] == "24.0"
+    assert rows[1].startswith(f"{local(2020, 1, 1).isoformat()};False;{MAC};") and rows[1].split(";")[VOLTAGE] == "24.0"
 
 
 def test_an_unreadable_spool_line_is_skipped(tmp_path):
-    clock = FakeClock(0.0)
+    clock = FakeClock(WRONG)
     out = CsvOutput(tmp_path, "tracker", clock=clock)
     out.emit_reading(reading(clock))
     with out.spool.open("a") as handle:

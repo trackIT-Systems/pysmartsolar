@@ -39,7 +39,7 @@ def test_aliases_and_conversions_are_applied():
 
 
 def test_docs_list_every_column_with_its_unit():
-    text = DOC.read_text()
+    text = DOC.read_text(encoding="utf-8")
     for column in COLUMNS:
         assert f"| `{column}` | {UNITS[column]} |" in text, column
         assert DESCRIPTIONS[column]

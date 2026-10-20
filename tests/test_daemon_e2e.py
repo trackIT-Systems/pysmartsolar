@@ -100,7 +100,7 @@ class Env:
     def csv_rows(self, kind="readings"):
         """The rows of today's CSV files (readings, or the events)."""
         files = sorted((self.csv_dir / "events" if kind == "events" else self.csv_dir).glob("*.csv"))
-        return [row for path in files for row in csv.DictReader(path.read_text().splitlines(), delimiter=";")]
+        return [row for path in files for row in csv.DictReader(path.read_text(encoding="utf-8").splitlines(), delimiter=";")]
 
     def published(self, suffix):
         return [p for t, p, _ in self.mqtt.published if t == f"{self.topic}/{suffix}"]

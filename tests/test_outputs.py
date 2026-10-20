@@ -15,6 +15,8 @@ from smartsolar.reading import Event, Reading, Value
 
 TZ = timezone(timedelta(hours=2))
 WHEN = datetime(2026, 10, 13, 12, 3, 0, 123000, tzinfo=TZ)
+# How the outputs write WHEN: in the local time zone (the runner's), whole seconds
+LOCAL = WHEN.astimezone().replace(microsecond=0).isoformat()
 MAC = "F7:48:18:8A:77:9D"
 TOPIC = "tracker/smartsolar/f748188a779d"
 
@@ -59,11 +61,11 @@ def test_all_formats_carry_the_same_columns_in_the_same_order():
 
 def test_time_has_its_offset_and_whole_seconds_and_cbor_uses_tag_0():
     record = reading_record(reading(), synced=False)
-    assert json.loads(encode_json(record))["time"] == "2026-10-13T12:03:00+02:00"
-    assert encode_csv(record).startswith(b"2026-10-13T12:03:00+02:00;False;F7:48:18:8A:77:9D;")
+    assert json.loads(encode_json(record))["time"] == LOCAL
+    assert encode_csv(record).startswith(f"{LOCAL};False;F7:48:18:8A:77:9D;".encode())
     raw = encode_cbor(record)
     assert raw[:3] == bytes([0x98, 3 + len(COLUMNS), 0xC0])  # array header (2 bytes), then tag 0
-    assert cbor2.loads(raw)[0].utcoffset() == timedelta(hours=2)
+    assert cbor2.loads(raw)[0].utcoffset() == WHEN.astimezone().utcoffset()
 
 
 # --- MQTT
@@ -153,7 +155,7 @@ def test_mqtt_events_in_three_formats_state_retained_as_map_and_will_offline():
     assert retained["tracker/smartsolar/state/json"] is True and "tracker/smartsolar/state/csv" not in retained
     assert retained["tracker/smartsolar/events/cbor"] is False
     event = json.loads({t: p for t, p, _ in client.published}["tracker/smartsolar/events/json"])
-    assert event == {"time": "2026-10-13T12:03:00+02:00", "synced": True, "device": MAC, "event": "device_selected", "detail": "rssi=-60"}
+    assert event == {"time": LOCAL, "synced": True, "device": MAC, "event": "device_selected", "detail": "rssi=-60"}
 
 
 # --- CSV files
@@ -165,9 +167,9 @@ def test_csv_one_file_per_day_for_all_sources_with_the_block(tmp_path):
     out.emit_reading(reading("vedirect"))
     out.emit_reading(reading("gatt", when=WHEN + timedelta(days=1)))
     base = tmp_path / "tracker" / "smartsolar"
-    day1 = (base / "tracker_2026-10-13_smartsolar.csv").read_text().splitlines()
+    day1 = (base / "tracker_2026-10-13_smartsolar.csv").read_text(encoding="utf-8").splitlines()
     assert day1[0] == ";".join(["time", "synced", "device", "block", *COLUMNS])
-    assert day1[1].startswith("2026-10-13T12:03:00+02:00;True;F7:48:18:8A:77:9D;advert;")
+    assert day1[1].startswith(f"{LOCAL};True;F7:48:18:8A:77:9D;advert;")
     assert day1[2].split(";")[3] == "vedirect" and len(day1) == 3
     assert (base / "tracker_2026-10-14_smartsolar.csv").exists()
 
@@ -177,8 +179,8 @@ def test_csv_logs_the_listed_events_in_their_own_file(tmp_path):
     out.emit_event(Event(WHEN, "key_fetched", MAC))
     out.emit_event(Event(WHEN, "gatt_failed", MAC, {"error": "timeout"}))  # not logged
     out.emit_state({"state": "running"})
-    lines = (tmp_path / "tracker/smartsolar/events/tracker_2026-10-13_smartsolar-events.csv").read_text().splitlines()
-    assert lines == ["time;synced;device;event;detail", f"2026-10-13T12:03:00+02:00;True;{MAC};key_fetched;"]
+    lines = (tmp_path / "tracker/smartsolar/events/tracker_2026-10-13_smartsolar-events.csv").read_text(encoding="utf-8").splitlines()
+    assert lines == ["time;synced;device;event;detail", f"{LOCAL};True;{MAC};key_fetched;"]
 
 
 def test_a_failing_sink_does_not_affect_the_others():
