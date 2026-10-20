@@ -26,7 +26,8 @@ from smartsolar.errors import BadRequest, ConfigError, ConnectError, NoDataError
 from smartsolar.gatt_manager import GattManager, GattState
 from smartsolar.keys import KeyStore
 from smartsolar.outputs import Output, Outputs
-from smartsolar.outputs.csv import CsvOutput, csv_session_path
+from smartsolar.clock import Clock
+from smartsolar.outputs.csv import CsvOutput
 from smartsolar.outputs.mqtt import MqttOutput
 from smartsolar.reading import Event, Reading, device_id, local_iso, utc_iso
 from smartsolar.server import ControlServer
@@ -70,12 +71,14 @@ class NoBackend:
 
 def build_outputs(config: AppConfig, hostname: str | None = None) -> Outputs:
     sinks: list[Output] = []
+    # One clock for both outputs, so they agree on when the clock got synced
+    csv_output = None
     if config.daemon.csv.enabled:
-        path = csv_session_path(config.daemon.csv.path, hostname)
-        log.info("csv file %s", path)
-        sinks.append(CsvOutput(path))
+        csv_output = CsvOutput(config.daemon.csv.path, hostname)
+        log.info("csv files in %s", csv_output.dir)
+        sinks.append(csv_output)
     if config.daemon.mqtt.enabled:
-        sinks.append(MqttOutput(config.daemon.mqtt, hostname))
+        sinks.append(MqttOutput(config.daemon.mqtt, hostname, clock=csv_output.clock if csv_output else Clock()))
     if not sinks:
         log.warning("no outputs enabled; readings are only available through the CLI")
     return Outputs(sinks)

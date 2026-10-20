@@ -1,7 +1,6 @@
 """The daemon with the VE.Direct cable: alone, next to Bluetooth, and as a way to the registers."""
 
 import asyncio
-import csv
 import json
 from pathlib import Path
 
@@ -27,7 +26,7 @@ def test_the_cable_alone_publishes_under_the_serial_number_and_touches_no_blueto
             dev.block(); dev.block()
             await until(lambda: env.published("json"))
             payload = json.loads(env.published("json")[-1])
-            assert payload["source"] == "vedirect" and payload["Battery voltage (V)"] == 13.32 and payload["PV power (W)"] == 2
+            assert payload["battery_voltage"] == 13.32 and payload["pv_power"] == 2 and payload["device"] == SERIAL_NUMBER
             assert not env.backend.scanning and env.backend.connect_passkeys == []
             status = await env.call("status")
             assert status["ble"] is False and status["id"] == SERIAL_NUMBER
@@ -37,9 +36,7 @@ def test_the_cable_alone_publishes_under_the_serial_number_and_touches_no_blueto
             assert read["device"] == SERIAL_NUMBER and {v["name"] for v in read["blocks"]["vedirect"]["values"]} >= {"battery_voltage", "panel_voltage", "yield_total"}
             cached = await env.call("cached")
             assert cached["blocks"]["vedirect"]["values"] and cached["blocks"]["gatt"]["enabled"] is False
-            with env.csv_path.open() as handle:
-                rows = list(csv.DictReader(handle))
-            assert any(r["device"] == SERIAL_NUMBER and r["block"] == "vedirect" and r["key"] == "battery_voltage" for r in rows)
+            assert any(r["device"] == SERIAL_NUMBER and r["block"] == "vedirect" and r["battery_voltage"] == "13.32" for r in env.csv_rows())
             events = [json.loads(p) for t, p, _ in env.mqtt.published if t == "tracker/smartsolar/events/json"]
             assert any(e["event"] == "serial_opened" for e in events)
 
@@ -161,8 +158,10 @@ def test_both_interfaces_describe_the_same_device_by_its_serial_number():
             dev.block(); dev.block()
             await until(lambda: env.daemon.tracker.current_address == B)  # the cable says which one it is
             env.advertise(B, n=3, name=f"SmartSolar {SERIAL_NUMBER}")
-            await until(lambda: any(json.loads(p)["source"] == "advert" for p in env.published("json")))
-            await until(lambda: any(json.loads(p)["source"] == "vedirect" for p in env.published("json")))
+            # MQTT does not say which source a reading came from; the files do
+            await until(lambda: any(r["block"] == "advert" for r in env.csv_rows()))
+            await until(lambda: any(r["block"] == "vedirect" for r in env.csv_rows()))
+            assert env.published("json")
             status = await env.call("status")
             assert status["id"] == SERIAL_NUMBER and status["device"]["address"] == B
 

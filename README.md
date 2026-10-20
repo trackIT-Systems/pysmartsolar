@@ -64,8 +64,9 @@ The key and the passkey are never logged and never published.
   The device keeps advertising while a GATT connection is open, so the advertisement data stays fresh in `hold` and `poll`.
 
   While a connection is being opened the advertisement scan is paused (BlueZ rejects connects while the same client scans), so with an access point up on 2.4 GHz the connection attempts of `hold` and `poll` cost advertisement readings (in a test, no reading for the first minute while the first attempts timed out). Failed attempts are retried with a jittered, growing delay, and nothing here touches Wi-Fi. Use `gatt.mode: off` there.
-* **CSV:** `/data/<host>/smartsolar/<host>_<timestamp>-smartsolar.csv`, one row per value (`ts, device, block, key, value, unit`; block `advert`, `gatt` or `event`).
-* **MQTT:** `{host}/smartsolar/{mac}/json|cbor` per reading (field `source`: `advert` or `gatt`), `{host}/smartsolar/state/json|cbor` (retained, `offline` as the last will) and `{host}/smartsolar/events/json|cbor`.
+* **MQTT:** every reading as CSV, JSON and CBOR on `{host}/smartsolar/{serial}/csv|json|cbor`, with the same columns whichever source it came from: `time` (with UTC offset), `synced`, `device`, then the values under their names (`battery_voltage`, `pv_power`, `yield_today`, ...). CBOR is a list in column order, about 175 bytes per reading, for cellular links. At most one reading per device every `mqtt.publish_interval_s` (300 s), the best source's newest. Events on `{host}/smartsolar/events/...`; `{host}/smartsolar/state/json|cbor` is retained, with `offline` as the last will.
+* **CSV:** one file per day, `/data/<host>/smartsolar/<host>_<date>_smartsolar.csv`, with the same columns plus `block` (`advert`, `gatt` or `vedirect`). It gets every reading. Readings taken before the clock is synced are re-timed before they reach the files.
+* Topics, columns with units, examples and the clock handling: [docs/outputs.md](docs/outputs.md).
 
 ## CLI
 

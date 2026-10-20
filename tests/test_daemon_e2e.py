@@ -12,7 +12,7 @@ from pathlib import Path
 import cbor2
 import pytest
 
-from fakes import A, B, TEST_KEY, FakeBackend, FakeMqtt, FakeSerialOpener, advert, free_port, run, until
+from fakes import A, B, TEST_KEY, FakeBackend, FakeClock, FakeMqtt, FakeSerialOpener, advert, free_port, run, until
 from smartsolar import daemon as daemon_module
 from smartsolar import ipc
 from smartsolar.config import AdvertConfig, AppConfig, BleConfig, CsvConfig, DaemonConfig, GattConfig, MqttConfig, SerialConfig
@@ -33,7 +33,7 @@ class Env:
         self.dir = Path(tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None, prefix="ss-"))
         self.tcp = tcp or sys.platform.startswith("win")  # Windows has no usable Unix sockets
         self.sock = f"tcp://127.0.0.1:{free_port()}" if self.tcp else self.dir / "run" / "s.sock"
-        self.csv_path = self.dir / "data" / "out.csv"
+        self.csv_dir = self.dir / "data" / "tracker" / "smartsolar"
         self.state_dir = self.dir / "state"
         self.mqtt = FakeMqtt()
         self.backend = FakeBackend()
@@ -50,9 +50,13 @@ class Env:
             keys={A: TEST_KEY} if keys == "default" else keys,
             serial=SerialConfig(enabled=serial is not None, hex=hex, publish_interval_s=0.05, stale_after_s=1.0, request_timeout_s=0.5,
                                 reopen_initial_s=0.01, reopen_max_s=0.02),
-            daemon=DaemonConfig(socket=self.sock, state_dir=self.state_dir, registers=registers, csv=CsvConfig(path=self.dir), mqtt=MqttConfig()),
+            daemon=DaemonConfig(socket=self.sock, state_dir=self.state_dir, registers=registers, csv=CsvConfig(path=self.dir), mqtt=MqttConfig(publish_interval_s=0)),
         )
-        outputs = Outputs([CsvOutput(self.csv_path), MqttOutput(self.config.daemon.mqtt, hostname="tracker", client=self.mqtt)])
+        clock = FakeClock(synced=True)
+        outputs = Outputs([
+            CsvOutput(self.dir / "data", hostname="tracker", clock=clock),
+            MqttOutput(self.config.daemon.mqtt, hostname="tracker", client=self.mqtt, clock=clock),
+        ])
         self.daemon = Daemon(self.config, backend=self.backend if ble else None, outputs=outputs, hostname="tracker", serial_opener=self.opener)
         self.task = None
         self.exit_code = None
@@ -93,6 +97,11 @@ class Env:
     async def call(self, cmd, **args):
         return await asyncio.to_thread(ipc.request, self.sock, cmd, args, timeout=5)
 
+    def csv_rows(self, kind="readings"):
+        """The rows of today's CSV files (readings, or the events)."""
+        files = sorted((self.csv_dir / "events" if kind == "events" else self.csv_dir).glob("*.csv"))
+        return [row for path in files for row in csv.DictReader(path.read_text().splitlines(), delimiter=";")]
+
     def published(self, suffix):
         return [p for t, p, _ in self.mqtt.published if t == f"{self.topic}/{suffix}"]
 
@@ -130,17 +139,18 @@ def test_outputs_have_the_expected_content():
             await env.select(voltage=13.31)
             env.advertise(n=2, voltage=13.4)
             await until(lambda: len(env.published("cbor")) >= 1)
-            with env.csv_path.open() as handle:
-                rows = list(csv.DictReader(handle))
+            rows = env.csv_rows()
+            events = env.csv_rows("events")
             await env.stop()
             states = [json.loads(p) for t, p, _ in env.mqtt.published if t == "tracker/smartsolar/state/json"]
             assert states[0]["state"] == "running" and states[-1]["state"] == "offline"
             kinds = {json.loads(p)["event"] for t, p, _ in env.mqtt.published if t == "tracker/smartsolar/events/json"}
             assert {"daemon_started", "device_selected", "daemon_stopped"} <= kinds
             as_json, as_cbor = json.loads(env.published("json")[0]), cbor2.loads(env.published("cbor")[0])
-            assert as_json == as_cbor and as_json["source"] == "advert" and "Battery voltage (V)" in as_json
-            assert any(r["block"] == "advert" and r["key"] == "battery_voltage" for r in rows)
-            assert any(r["block"] == "event" and r["key"] == "device_selected" for r in rows)
+            assert list(as_json.values())[1:] == as_cbor[1:] and as_json["battery_voltage"] in (13.31, 13.4)
+            assert "source" not in as_json and "block" not in as_json
+            assert any(r["block"] == "advert" and r["battery_voltage"] in ("13.31", "13.4") for r in rows)
+            assert any(r["event"] == "device_selected" for r in events)
             assert not any("key" in str(p).lower() and TEST_KEY.hex() in str(p) for _, p, _ in env.mqtt.published)
 
     run(go())
@@ -248,7 +258,7 @@ def test_poll_mode_serves_gatt_reads_by_connecting():
             status = await env.call("status")
             assert status["gatt"]["mode"] == "poll" and status["gatt"]["polls"] >= 2 and status["gatt"]["next_poll_in_s"] is not None
             published = [json.loads(p) for p in env.published("json")]
-            assert any(m["source"] == "gatt" and m["Channel 1 voltage (V)"] == 13.31 for m in published)
+            assert any(m["channel_1_voltage"] == 13.31 for m in published)
 
     run(go())
 
@@ -355,10 +365,11 @@ def test_write_command_changes_a_register_and_logs_it():
             assert env.backend.registers[0x0200] == b"\x04"
             events = [json.loads(p) for t, p, _ in env.mqtt.published if t == "tracker/smartsolar/events/json"]
             written = [e for e in events if e["event"] == "register_written"]
-            assert [(e["name"], e["new"], e["ok"]) for e in written] == [("device_mode", "off", True), ("float_voltage", 13.51, True)]
-            with env.csv_path.open() as handle:
-                rows = list(csv.DictReader(handle))
-            assert any(r["block"] == "event" and r["key"] == "register_written" and "name=device_mode" in r["value"] for r in rows)
+            details = [e["detail"] for e in written]
+            assert len(details) == 2 and all("ok=True" in d for d in details)
+            assert "name=device_mode" in details[0] and "new=off" in details[0]
+            assert "name=float_voltage" in details[1] and "new=13.51" in details[1]
+            assert any(r["event"] == "register_written" and "name=device_mode" in r["detail"] for r in env.csv_rows("events"))
 
     run(go())
 

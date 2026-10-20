@@ -79,8 +79,10 @@ def test_values_include_units_and_none_for_unavailable(tmp_path):
     clock.now += 10
     tracker.review()
     feed(tracker, clock, A, -50, state=5, voltage=13.6, pv_w=40, nonce=2)
-    values = {v.key: v.value for v in cache.blocks["advert"].reading.values}
-    assert values["Device state"] == "float" and values["Battery voltage (V)"] == 13.6 and values["PV power (W)"] == 40
+    values = {v.name: v.value for v in cache.blocks["advert"].reading.values}
+    assert values["device_state"] == "float" and values["battery_voltage"] == 13.6 and values["pv_power"] == 40
+    units = {v.name: v.unit for v in cache.blocks["advert"].reading.values}
+    assert units["battery_voltage"] == "V" and units["pv_power"] == "W"
 
 
 def test_switch_needs_the_hysteresis_and_the_review_interval(tmp_path):

@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- **Output formats.** Every reading and event goes out over MQTT as CSV, JSON and CBOR (`mqtt.csv`, `mqtt.json`, `mqtt.cbor`). All three carry the same fixed columns: `time` (with UTC offset; CBOR tag 0), `synced`, `device`, then the values under their names. The columns are the same for all sources, and MQTT no longer says which source a reading came from (no `source`). GATT's `panel_power` and `load_output_current` are published as `pv_power` and `load_current`, and `yield_today` is always in kWh (the advertisement's Wh are converted). The display texts with units (`"Battery voltage (V)"`) are gone from all outputs; units are documented per column in [docs/outputs.md](docs/outputs.md). CBOR is a list in column order with each number in its smallest exact form: a VE.Direct reading is about 175 bytes instead of 480. Event data is in one `detail` column (`key=value` pairs); the retained state is unchanged.
+- **MQTT rate limit.** `mqtt.publish_interval_s` (default 300 s) allows at most one reading per device in that time. The best source held back goes out (VE.Direct, then GATT, then the advertisements), the newest within a source; `0` publishes every reading. Events, state and files are not limited.
+- **CSV files.** One file per calendar day, `<csv.path>/<host>/smartsolar/<host>_<YYYY-MM-DD>_smartsolar.csv`, with the MQTT columns plus `block`; events in `.../events/`. This replaces one long-format file per daemon start.
+- **Clock.** Readings taken before the clock is synced (the kernel's `adjtimex` state) are published over MQTT with `synced` false and held in a spool for the files. At the sync they are re-timed from the time since boot and written to the right day. A spool from a boot that never synced becomes `<host>_unsynced_<boot_id>_smartsolar.csv`.
 - The default config file on Linux is `/etc/smartsolar/smartsolar.yml` (was `/boot/firmware/smartsolar.yml`). A system that keeps the file elsewhere passes `--config`.
 
 ## [1.2.0] - 2026-10-14

@@ -375,3 +375,64 @@ class FakeSerialOpener:
             raise _ConnectError(f"cannot open {port}: no such file", not_found=True)
         self.current = self.devices.pop(0)
         return self.current
+
+
+class FakeClock:
+    """Wall clock and boot clock that only move when told to (smartsolar.clock.Clock's interface).
+
+    `time` starts wrong (as on a station without RTC) until `sync()` sets it.
+    """
+
+    def __init__(self, time: float = 0.0, boottime: float = 100.0, boot_id: str = "boot-a", synced: bool = False):
+        self._time = time
+        self._boottime = boottime
+        self._boot_id = boot_id
+        self._synced = synced
+
+    def time(self) -> float:
+        return self._time
+
+    def boottime(self) -> float:
+        return self._boottime
+
+    def boot_id(self) -> str:
+        return self._boot_id
+
+    def synced(self) -> bool:
+        return self._synced
+
+    def advance(self, seconds: float) -> None:
+        self._time += seconds
+        self._boottime += seconds
+
+    def sync(self, time: float) -> None:
+        """chrony steps the wall clock; the boot clock is unaffected."""
+        self._time = time
+        self._synced = True
+
+
+class FakeScheduler:
+    """Collects scheduled callbacks (MqttOutput's flush) to run them when a test says so."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, delay, callback):
+        handle = FakeHandle(delay, callback)
+        self.calls.append(handle)
+        return handle
+
+    def run_due(self):
+        due, self.calls = [h for h in self.calls if not h.cancelled], []
+        for handle in due:
+            handle.callback()
+
+
+class FakeHandle:
+    def __init__(self, delay, callback):
+        self.delay = delay
+        self.callback = callback
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True

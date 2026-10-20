@@ -74,5 +74,9 @@ daemon:
     host: localhost
     port: 1883
     qos: 0
+    # payload formats, each on its own topic (see docs/outputs.md)
+    csv: true
     json: true
     cbor: true
+    # at most one reading per device in this many seconds (the best source's newest); 0 = every reading
+    publish_interval_s: 300

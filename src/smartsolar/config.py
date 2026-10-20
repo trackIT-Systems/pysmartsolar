@@ -79,8 +79,11 @@ class MqttConfig:
     host: str = "localhost"
     port: int = 1883
     qos: int = 0
+    csv: bool = True
     json: bool = True
     cbor: bool = True
+    # At most one reading per device in this many seconds, the best source's newest; 0 publishes every reading
+    publish_interval_s: float = 300.0
 
 
 @dataclass(frozen=True)
@@ -351,7 +354,9 @@ def _parse_daemon(raw: dict[str, Any]) -> DaemonConfig:
             host=_str(mqtt_raw, "host", md.host, "daemon.mqtt") or md.host,
             port=_int(mqtt_raw, "port", md.port, "daemon.mqtt", minimum=1, maximum=65535),
             qos=_int(mqtt_raw, "qos", md.qos, "daemon.mqtt", minimum=0, maximum=2),
+            csv=_bool(mqtt_raw, "csv", md.csv, "daemon.mqtt"),
             json=_bool(mqtt_raw, "json", md.json, "daemon.mqtt"),
             cbor=_bool(mqtt_raw, "cbor", md.cbor, "daemon.mqtt"),
+            publish_interval_s=_float(mqtt_raw, "publish_interval_s", md.publish_interval_s, "daemon.mqtt", allow_zero=True),
         ),
     )

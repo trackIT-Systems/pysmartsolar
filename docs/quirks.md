@@ -35,4 +35,4 @@ On the Raspberry Pi 3 and 5 Wi-Fi and Bluetooth share one chip. With the 2.4 GHz
 ## Daemon
 
 * The first Instant Readout key is fetched once over GATT and stored in `daemon.state_dir` (mode 0600). If the stored key stops matching (device reset), it is dropped after 5 mismatches and fetched again. A wrong key in the config is only reported.
-* MQTT topics use the serial number (`{host}/smartsolar/{serial}/json|cbor`), the MAC address as 12 hex digits only if no serial is known.
+* MQTT topics use the serial number (`{host}/smartsolar/{serial}/csv|json|cbor`), the MAC address as 12 hex digits only if no serial is known.
