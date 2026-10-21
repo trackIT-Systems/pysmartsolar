@@ -11,6 +11,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - **CSV files.** One file per calendar day, `<csv.path>/<host>/smartsolar/<host>_<YYYY-MM-DD>_smartsolar.csv`, with the MQTT columns plus `block`; events in `.../events/`. This replaces one long-format file per daemon start.
 - **Clock.** Readings taken before the clock is synced (the kernel's `adjtimex` state) are published over MQTT with `synced` false and held in a spool for the files. At the sync they are re-timed from the time since boot and written to the right day. A spool from a boot that never synced becomes `<host>_unsynced_<boot_id>_smartsolar.csv`.
 - The default config file on Linux is `/etc/smartsolar/smartsolar.yml` (was `/boot/firmware/smartsolar.yml`). A system that keeps the file elsewhere passes `--config`.
+- **Default log level WARNING.** `daemon.log_level` defaults to `WARNING` (was `INFO`), as do the shipped configs, following tsOS's logging convention: a working station logs nothing in normal operation. `-v` still turns on DEBUG.
 - **Logging.** Under systemd, `smartsolard` logs to the journal directly, with the syslog priority of each message, `SYSLOG_IDENTIFIER` `smartsolard` and the source location (`CODE_FILE`, `CODE_LINE`, `CODE_FUNC`). Before, every line went through stderr and was stored as `info`. On a terminal, the output on stderr is unchanged.
 
 ## [1.2.0] - 2026-10-14

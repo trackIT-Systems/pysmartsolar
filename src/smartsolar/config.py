@@ -92,7 +92,7 @@ class DaemonConfig:
     socket_mode: int = 0o660
     state_dir: Path = DEFAULT_STATE_DIR
     registers: str = "auto"  # how settings are read and written: auto (the cable if it answers, else GATT), serial, gatt
-    log_level: str = "INFO"
+    log_level: str = "WARNING"
     csv: CsvConfig = field(default_factory=CsvConfig)
     mqtt: MqttConfig = field(default_factory=MqttConfig)
 

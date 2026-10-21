@@ -65,7 +65,7 @@ daemon:
   socket_mode: "0600"            # only you
   state_dir: ~/Library/Application Support/smartsolar   # fetched keys
   registers: auto
-  log_level: INFO
+  log_level: WARNING
   csv:
     enabled: true
     path: ~/Library/Application Support/smartsolar/data
