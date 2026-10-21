@@ -24,6 +24,7 @@ from smartsolar.ble import BleBackend
 from smartsolar.config import AppConfig, load_config
 from smartsolar.errors import BadRequest, ConfigError, ConnectError, NoDataError, NotConnectedError, ProtocolError, SmartsolarError
 from smartsolar.gatt_manager import GattManager, GattState
+from smartsolar.journal import log_handler
 from smartsolar.keys import KeyStore
 from smartsolar.outputs import Output, Outputs
 from smartsolar.clock import Clock
@@ -603,7 +604,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     level = logging.DEBUG if args.verbose else getattr(logging, config.daemon.log_level)
-    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr)
+    logging.basicConfig(level=level, handlers=[log_handler("smartsolard")])
     try:
         return asyncio.run(Daemon(config).run())
     except (SmartsolarError, OSError) as exc:
