@@ -320,6 +320,6 @@ def decode_text(fields: dict[str, str]) -> TextReading:
         try:
             out.values[f.name] = f.convert(raw)
         except (ValueError, TypeError):
-            log.debug("cannot convert %s=%r", f.key, raw)
+            log.debug("Cannot convert the VE.Direct field %s=%r", f.key, raw)
     out.unknown = {k: v for k, v in fields.items() if k not in known and k != "Checksum"}
     return out

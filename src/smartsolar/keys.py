@@ -40,16 +40,16 @@ class KeyStore:
         except FileNotFoundError:
             return
         except (OSError, ValueError) as exc:
-            log.warning("cannot read %s: %s", self._path, exc)
+            log.warning("Cannot read %s: %s", self._path, exc)
             return
         if not isinstance(raw, dict):
-            log.warning("ignoring %s: not a mapping", self._path)
+            log.warning("Ignoring %s: not a mapping", self._path)
             return
         for address, text in raw.items():
             try:
                 self._fetched[normalise_address(address)] = parse_key(text, "stored key")
             except ConfigError as exc:
-                log.warning("ignoring a stored key for %s: %s", address, exc)
+                log.warning("Ignoring the stored key for %s: %s", address, exc)
 
     @staticmethod
     def _names(address: str, name: str | None) -> list[str]:

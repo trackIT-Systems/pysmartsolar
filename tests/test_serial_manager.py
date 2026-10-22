@@ -1,4 +1,6 @@
 import asyncio
+import dataclasses
+import logging
 from contextlib import asynccontextmanager
 
 import pytest
@@ -118,6 +120,45 @@ def test_a_missing_cable_is_reported_once_not_at_every_retry(caplog):
                 await until(lambda: s.kinds().count("serial_lost") == 3)  # the loss, then the port missing: each reported once
                 await until(lambda: len(s.opener.opened) >= 9)
                 assert s.kinds().count("serial_lost") == 3
+
+    run(go())
+
+
+def serial_logs(caplog, text):
+    return [r.levelname for r in caplog.records if r.name == "smartsolar.serial_manager" and text in r.getMessage()]
+
+
+@pytest.mark.parametrize(("port", "level"), [("/dev/ttyUSBvd*", "INFO"), ("/dev/ttyUSB0", "WARNING")])
+def test_a_missing_cable_is_info_for_a_pattern_and_a_warning_for_a_fixed_port(caplog, port, level):
+    async def go():
+        with caplog.at_level(logging.DEBUG, logger="smartsolar.serial_manager"):
+            async with running(cfg=dataclasses.replace(CFG, port=port)) as s:
+                await until(lambda: len(s.opener.opened) >= 4)
+                dev = FakeSerial()
+                s.opener.devices.append(dev)
+                await until(lambda: s.manager.connected)
+        assert serial_logs(caplog, "is not available")[:4] == [level, "DEBUG", "DEBUG", "DEBUG"]
+        assert serial_logs(caplog, "works again") == ["INFO"]
+        assert serial_logs(caplog, "Opened serial port") == []  # the recovery says it
+
+    run(go())
+
+
+def test_a_lost_cable_is_logged_once_and_its_return_once(caplog):
+    async def go():
+        a, b = FakeSerial(), FakeSerial()
+        with caplog.at_level(logging.DEBUG, logger="smartsolar.serial_manager"):
+            async with running(a, b) as s:
+                with_two_blocks(a)
+                await until(lambda: s.serials == [SERIAL_NUMBER])
+                a.unplug()
+                await until(lambda: s.opener.current is b and s.manager.connected)
+                b.block(); b.block()
+                await until(lambda: s.manager.stats.opens == 2 and s.manager.last_reading is not None)
+        assert serial_logs(caplog, "Opened serial port") == ["INFO"]
+        assert serial_logs(caplog, "Lost serial port") == ["INFO"]  # the default port is a pattern: a cable if there is one
+        assert serial_logs(caplog, "works again") == ["INFO"]
+        assert serial_logs(caplog, "Serial number") == ["INFO"]  # the same device again
 
     run(go())
 

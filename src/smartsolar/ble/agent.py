@@ -23,12 +23,12 @@ class PasskeyAgent(ServiceInterface):
 
     @method()
     def RequestPinCode(self, device: "o") -> "s":  # noqa: F821
-        log.debug("pin code requested by BlueZ for %s", device)
+        log.debug("BlueZ requests a PIN code for %s", device)
         return f"{self._passkey:06d}"
 
     @method()
     def RequestPasskey(self, device: "o") -> "u":  # noqa: F821
-        log.debug("passkey requested by BlueZ for %s", device)
+        log.debug("BlueZ requests the passkey for %s", device)
         return self._passkey
 
     @method()
@@ -63,7 +63,7 @@ class registered_agent:
         self._manager = self._bus.get_proxy_object("org.bluez", "/org/bluez", introspection).get_interface("org.bluez.AgentManager1")
         await self._manager.call_register_agent(AGENT_PATH, "KeyboardDisplay")
         await self._manager.call_request_default_agent(AGENT_PATH)
-        log.debug("pairing agent registered")
+        log.debug("Registered the BlueZ pairing agent")
         return self
 
     async def __aexit__(self, *exc):
@@ -71,7 +71,7 @@ class registered_agent:
             if self._manager is not None:
                 await self._manager.call_unregister_agent(AGENT_PATH)
         except Exception as error:
-            log.debug("unregistering the agent: %r", error)
+            log.debug("Cannot unregister the BlueZ pairing agent: %r", error)
         finally:
             if self._bus is not None:
                 self._bus.disconnect()

@@ -55,7 +55,7 @@ class GattSession:
             try:
                 await self.link.write("0024", PING)
             except SmartsolarError as exc:
-                log.debug("keepalive failed: %s", exc)
+                log.debug("The GATT keepalive ping failed, stopping it: %s", exc)
                 return
 
     def on_disconnect(self) -> None:
@@ -137,7 +137,7 @@ class GattSession:
             except ProtocolError as exc:
                 if vreg in self.errors:
                     self.unavailable.add(vreg)
-                log.debug("refresh: %s", exc)
+                log.debug("Cannot refresh register 0x%04x over GATT: %s", vreg, exc)
 
     async def write_register(self, vreg: int, raw: bytes, timeout_s: float) -> Any:
         """Write a register. The device answers with a value record echoing what it stored."""
@@ -164,4 +164,4 @@ class GattSession:
         try:
             await self.link.disconnect()
         except Exception as exc:
-            log.debug("disconnect: %s", exc)
+            log.debug("Cannot close the GATT session: %s", exc)

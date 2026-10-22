@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import pytest
 
@@ -187,6 +188,52 @@ def test_failed_connects_are_retried_with_backoff():
             assert rig.stats.connect_attempts == 3 and rig.kinds().count("gatt_failed") == 2
             assert rig.stats.last_error == "InProgress" and rig.stats.connects == 1
             assert rig.stats.backoff_s is None  # reset after the success
+
+    run(go())
+
+
+def gatt_logs(caplog, text):
+    return [r.levelname for r in caplog.records if r.name == "smartsolar.gatt_manager" and text in r.getMessage()]
+
+
+def test_a_connection_failing_several_retries_is_logged_once_and_the_recovery_once(caplog):
+    async def go():
+        backend = FakeBackend()
+        backend.connect_errors = [connect_error(), connect_error(), connect_error(), connect_error()]
+        with caplog.at_level(logging.DEBUG, logger="smartsolar.gatt_manager"):
+            async with Rig("hold", backend=backend) as rig:
+                # connecting is no recovery yet; the first reading is
+                await until(lambda: rig.mgr.state is GattState.CONNECTED)
+                assert gatt_logs(caplog, "works again") == []
+                await until(lambda: len(rig.readings) >= 1)
+        assert gatt_logs(caplog, "GATT connection to") == ["WARNING", "DEBUG", "DEBUG", "DEBUG"]
+        assert gatt_logs(caplog, "works again") == ["INFO"]
+        assert gatt_logs(caplog, "GATT state") and set(gatt_logs(caplog, "GATT state")) == {"DEBUG"}  # connecting/backoff cycle
+        above_debug = [r.getMessage() for r in caplog.records if r.name == "smartsolar.gatt_manager" and r.levelno > logging.DEBUG]
+        assert above_debug == [f"GATT connection to {A} failed: connect timed out (retry in 0.0 s)", f"GATT with {A} works again"]
+
+    run(go())
+
+
+def test_a_changed_connection_error_is_logged_again(caplog):
+    async def go():
+        backend = FakeBackend()
+        backend.connect_errors = [connect_error(), connect_error(), connect_error("InProgress")]
+        with caplog.at_level(logging.DEBUG, logger="smartsolar.gatt_manager"):
+            async with Rig("hold", backend=backend) as rig:
+                await until(lambda: rig.mgr.state is GattState.CONNECTED)
+        assert gatt_logs(caplog, "GATT connection to") == ["WARNING", "DEBUG", "WARNING"]
+
+    run(go())
+
+
+def test_polls_tell_only_the_first_connection(caplog):
+    async def go():
+        with caplog.at_level(logging.DEBUG, logger="smartsolar.gatt_manager"):
+            async with Rig("poll") as rig:
+                await until(lambda: len(rig.readings) >= 2)
+        assert gatt_logs(caplog, "Connected to")[:2] == ["INFO", "DEBUG"]
+        assert set(gatt_logs(caplog, "Disconnected from")) == {"DEBUG"}
 
     run(go())
 

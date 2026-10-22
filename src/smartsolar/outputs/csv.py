@@ -46,7 +46,7 @@ class CsvOutput:
         try:
             self.recover()
         except OSError as exc:
-            log.error("cannot recover the spools in %s: %s", self.spool_dir, exc)
+            log.error("Cannot recover the spools in %s: %s", self.spool_dir, exc)
 
     def _file(self, key: str, stem: str) -> Path:
         if key == EVENTS:
@@ -111,7 +111,7 @@ class CsvOutput:
                     yield json.loads(line)
                 except json.JSONDecodeError:
                     # e.g. the last line of a spool cut off by a power loss
-                    log.warning("skipping unreadable line %d of %s", number, spool)
+                    log.warning("Skipping unreadable line %d of %s", number, spool)
 
     def flush_spool(self) -> None:
         """Re-time this boot's spooled rows with the now synced clock and write them out."""
@@ -123,7 +123,7 @@ class CsvOutput:
             self._append(self.daily_file(entry["key"], when), header, [when, False, entry["device"], *entry["values"]])
             count += 1
         self.spool.unlink()
-        log.info("clock synced: wrote %d spooled rows to the daily files", count)
+        log.info("Clock synced: wrote %d spooled rows to the daily files", count)
 
     def recover(self) -> None:
         """Turn spools of earlier boots into `_unsynced_` files; their times cannot be corrected."""
@@ -140,4 +140,4 @@ class CsvOutput:
                 self._append(self.unsynced_file(entry["key"], boot_id), header, row)
                 count += 1
             spool.unlink()
-            log.warning("boot %s never had a synced clock: wrote %d rows to its unsynced files", boot_id, count)
+            log.warning("Boot %s never had a synced clock: wrote %d rows to its unsynced files", boot_id, count)

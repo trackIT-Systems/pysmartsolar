@@ -4,6 +4,7 @@ import logging
 from collections.abc import Iterable
 from typing import Any, Protocol
 
+from smartsolar.failures import Failures
 from smartsolar.reading import Event, Reading
 
 log = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ class Outputs:
 
     def __init__(self, sinks: Iterable[Output] = ()) -> None:
         self.sinks = list(sinks)
+        self._failures = Failures(log)
 
     def emit_reading(self, reading: Reading) -> None:
         for sink in self.sinks:
@@ -41,9 +43,12 @@ class Outputs:
         for sink in self.sinks:
             self._call(sink, "close")
 
-    @staticmethod
-    def _call(sink: Output, method: str, *args: Any) -> None:
+    def _call(self, sink: Output, method: str, *args: Any) -> None:
+        name = type(sink).__name__
+        key = f"{name}.{method}"
         try:
             getattr(sink, method)(*args)
         except Exception:
-            log.exception("output %s failed in %s", type(sink).__name__, method)
+            self._failures.exception(key, "Output %s failed in %s", name, method)
+        else:
+            self._failures.succeeded(key, "Output %s works again in %s", name, method)

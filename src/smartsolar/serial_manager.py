@@ -20,9 +20,10 @@ from smartsolar import vedirect
 from smartsolar.backoff import Backoff
 from smartsolar.config import SerialConfig
 from smartsolar.errors import ConnectError, NoDataError, NotConnectedError, ProtocolError, WriteFailed
+from smartsolar.failures import Failures
 from smartsolar.reading import Event, Reading, Value
 from smartsolar.registers import check_write, write_result
-from smartsolar.serial_link import SerialLink, open_pyserial
+from smartsolar.serial_link import SerialLink, is_pattern, open_pyserial
 from smartsolar.state import Cache, SerialStats
 from smartsolar.vreg import VREG_FIRMWARE, WriteItem
 from smartsolar.vedirect import CMD_GET, CMD_SET, HexFrame, StreamParser, TextBlock
@@ -57,7 +58,10 @@ class SerialManager:
         self._parser = StreamParser()
         self._lock = asyncio.Lock()
         self._waiter: tuple[Callable[[HexFrame], bool], asyncio.Future] | None = None
-        self._reported: str | None = None  # the last failure that was logged and published; repeats are only retried
+        self._reported: str | None = None  # the last failure that was published as an event; repeats are only retried
+        self._failures = Failures(log)
+        self._opened_before = False
+        self._warned_no_serial = False
         self.state = "closed"  # closed | open | backoff
         self.serial: str | None = None
         self.product_id: int | None = None
@@ -90,14 +94,16 @@ class SerialManager:
             try:
                 link = await self._opener(self.cfg.port, self.cfg.baud)
             except ConnectError as exc:
-                await self._failed(str(exc))
+                await self._failed(str(exc), absent=exc.not_found)
                 continue
             self._link = link
             self._parser = StreamParser()
             self._reported = None
             self.state = "open"
             self.stats.opens += 1
-            log.info("serial port %s open", self.cfg.port)
+            if not self._failures.succeeded("port", "Serial port %s works again", self.cfg.port):
+                log.log(logging.DEBUG if self._opened_before else logging.INFO, "Opened serial port %s", self.cfg.port)
+            self._opened_before = True
             self._event("serial_opened", port=self.cfg.port)
             error = "closed"
             try:
@@ -109,16 +115,26 @@ class SerialManager:
                 self._fail_waiter(NotConnectedError("the serial port was lost"))
                 await link.close()
             self.stats.losses += 1
-            await self._failed(error)
+            await self._failed(error, lost=True)
 
-    async def _failed(self, message: str) -> None:
+    @property
+    def optional(self) -> bool:
+        """A pattern (the default /dev/ttyUSBvd*) means "a cable if there is one"; a fixed port is expected to be there."""
+        return is_pattern(self.cfg.port)
+
+    async def _failed(self, message: str, *, absent: bool = False, lost: bool = False) -> None:
         self.stats.last_error = message
         delay = self.stats.backoff_s = self._backoff.next()
         self.state = "backoff"
         # A cable that is not there is retried for ever: say it once, not at every attempt
         repeated = message == self._reported
         self._reported = message
-        log.log(logging.DEBUG if repeated else logging.INFO, "serial port %s: %s (retry in %.1f s)", self.cfg.port, message, delay)
+        # A cable that is missing or unplugged is expected with a pattern (INFO), not with a fixed port (WARNING)
+        level = logging.INFO if self.optional and (absent or lost) else logging.WARNING
+        if lost:
+            self._failures.failed("port", message, "Lost serial port %s: %s (retry in %.1f s)", self.cfg.port, message, delay, level=level)
+        else:
+            self._failures.failed("port", message, "Serial port %s is not available: %s (retry in %.1f s)", self.cfg.port, message, delay, level=level)
         if not repeated:
             self._event("serial_lost", port=self.cfg.port, error=message, retry_in_s=round(delay, 1))
         await asyncio.sleep(delay)
@@ -145,13 +161,14 @@ class SerialManager:
         if decoded.firmware is not None:
             self.firmware = decoded.firmware
         if decoded.serial is None:
-            if self.serial is None:
-                log.warning("the text block has no SER# field, using the port name as the device id")
+            if self.serial is None and not self._warned_no_serial:
+                self._warned_no_serial = True
+                log.warning("The text block on serial port %s has no SER# field, using the port name as the device id", self.cfg.port)
         elif decoded.serial != self.serial:
             if self.serial is not None:
                 self.cache.clear("vedirect")
             self.serial = decoded.serial
-            log.info("serial number %s (product 0x%X, firmware 0x%X)", self.serial, self.product_id or 0, self.firmware or 0)
+            log.info("Serial number %s on serial port %s (product 0x%X, firmware 0x%X)", self.serial, self.cfg.port, self.product_id or 0, self.firmware or 0)
             self._event("serial_device", serial=self.serial, product_id=self.product_id, firmware=self.firmware)
             if self._on_serial is not None:
                 self._on_serial(self.serial)
@@ -217,7 +234,7 @@ class SerialManager:
                 try:
                     values[vreg] = await self._get(vreg)
                 except ProtocolError as exc:
-                    log.debug("read of 0x%04x: %s", vreg, exc)
+                    log.debug("Cannot read register 0x%04x over the serial port: %s", vreg, exc)
         if not values:
             raise NoDataError("the device answered none of the registers")
         return values
@@ -249,7 +266,7 @@ class SerialManager:
         try:
             self._emit_event(Event(datetime.now().astimezone(), kind, self.device_id if self.serial else None, data))
         except Exception:
-            log.exception("event callback failed")
+            self._failures.exception("event callback", "Cannot emit the %s event", kind)
 
     def describe(self) -> dict[str, Any]:
         now = self._clock()

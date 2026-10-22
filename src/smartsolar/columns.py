@@ -102,7 +102,7 @@ def _convert(name: str, value: Any, unit: str, column: str) -> Any:
         return value
     factor = CONVERSIONS.get((unit, target))
     if factor is None:
-        log.debug("no conversion from %s to %s for %s", unit, target, name)
+        log.debug("No conversion from %s to %s for %s", unit, target, name)
         return value
     return round(value * factor, 6)
 
@@ -115,7 +115,7 @@ def row(reading: Reading) -> tuple[Any, ...]:
         if column not in UNITS:
             if v.name not in _dropped:
                 _dropped.add(v.name)
-                log.debug("value %s has no column, not published", v.name)
+                log.debug("Value %s has no column, not published", v.name)
             continue
         values[column] = _convert(v.name, v.value, v.unit, column)
     return tuple(values.get(column) for column in COLUMNS)

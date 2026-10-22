@@ -76,7 +76,12 @@ class PySerialLink:
         try:
             await asyncio.to_thread(self._ser.close)
         except Exception as exc:
-            log.debug("closing the serial port: %s", exc)
+            log.debug("Cannot close the serial port: %s", exc)
+
+
+def is_pattern(port: str) -> bool:
+    """Whether ``port`` is a pattern such as /dev/ttyUSBvd* rather than one port."""
+    return any(c in port for c in "*?[")
 
 
 def resolve_port(port: str) -> str:
@@ -86,7 +91,7 @@ def resolve_port(port: str) -> str:
     USB port, under another index) is found. With several matches the lowest index wins: the
     daemon follows one device.
     """
-    if not any(c in port for c in "*?["):
+    if not is_pattern(port):
         return port
     matches = sorted(glob.glob(port), key=lambda p: [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", p)])
     if not matches:

@@ -118,7 +118,7 @@ class RecordParser:
                 break
             if record is None:
                 self.dropped += used
-                log.debug("dropping unparsable bytes %s", data[pos : pos + used].hex())
+                log.debug("Dropping unparsable GATT bytes %s", data[pos : pos + used].hex())
             else:
                 records.append(record)
             pos += used

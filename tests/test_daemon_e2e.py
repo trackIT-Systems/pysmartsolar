@@ -1,6 +1,7 @@
 import asyncio
 import csv
 import json
+import logging
 import os
 import shutil
 import socket
@@ -333,7 +334,7 @@ def test_the_scan_is_restarted_when_the_device_goes_quiet(monkeypatch):
     run(go())
 
 
-def test_a_scan_that_cannot_start_is_retried():
+def test_a_scan_that_cannot_start_is_retried(caplog):
     async def go():
         env = Env()
         original = env.backend.start_scan
@@ -352,7 +353,23 @@ def test_a_scan_that_cannot_start_is_retried():
         await env.stop()
         shutil.rmtree(env.dir, ignore_errors=True)
 
-    run(go())
+    with caplog.at_level(logging.DEBUG, logger="smartsolar.daemon"):
+        run(go())
+    logs = [(r.levelname, r.getMessage()) for r in caplog.records if r.name == "smartsolar.daemon" and "scan" in r.getMessage()]
+    assert logs == [
+        ("WARNING", "Cannot start the scan: adapter is off (retrying every 0.05 s)"),
+        ("DEBUG", "Cannot start the scan: adapter is off (retrying every 0.05 s)"),
+        ("INFO", "Starting the scan works again"),
+    ]
+
+
+def test_a_config_error_is_logged_as_critical(tmp_path, caplog, capsys):
+    path = tmp_path / "smartsolar.yml"
+    path.write_text("nonsense: true\n", encoding="utf-8")
+    assert daemon_module.main(["--config", str(path)]) == 1
+    (record,) = [r for r in caplog.records if r.name == "smartsolar.daemon"]
+    assert record.levelno == logging.CRITICAL and record.getMessage().startswith("Cannot load the configuration: ")
+    assert "error:" not in capsys.readouterr().err
 
 
 def test_write_command_changes_a_register_and_logs_it():

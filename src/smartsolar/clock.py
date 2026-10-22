@@ -39,7 +39,7 @@ def kernel_clock_synced() -> bool:
     buf = ctypes.create_string_buffer(512)
     state = adjtimex(buf)
     if state == -1:
-        log.debug("adjtimex failed: errno %d", ctypes.get_errno())
+        log.debug("Cannot read the clock state with adjtimex: errno %d", ctypes.get_errno())
         return False
     return state != TIME_ERROR
 
@@ -82,5 +82,5 @@ class Clock:
                     marker.parent.mkdir(parents=True, exist_ok=True)
                     marker.touch()
                 except OSError as exc:
-                    log.debug("cannot write %s: %s", marker, exc)
+                    log.debug("Cannot write %s: %s", marker, exc)
         return self._synced

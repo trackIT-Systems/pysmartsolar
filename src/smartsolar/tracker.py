@@ -20,6 +20,7 @@ from smartsolar import instant
 from smartsolar.ble import Advertisement
 from smartsolar.config import AdvertConfig, BleConfig
 from smartsolar.errors import AdvertError, KeyMismatch
+from smartsolar.failures import Failures
 from smartsolar.keys import SOURCE_FETCHED, KeyStore
 from smartsolar.reading import Event, Reading, Value, device_id, serial_from_name
 from smartsolar.state import AdvertStats, Cache
@@ -93,6 +94,7 @@ class DeviceTracker:
         self._next_review = 0.0
         self._mismatches = 0
         self._times: deque[float] = deque()
+        self._failures = Failures(log)
 
     # -- advertisements -----------------------------------------------------
 
@@ -140,7 +142,7 @@ class DeviceTracker:
             self.stats.rejected += 1
             self._mismatches += 1
             if self._mismatches == 1:
-                log.warning("%s: %s (key from %s)", adv.address, exc, source)
+                log.warning("Cannot decode the advertisement of %s: %s (key from %s)", adv.address, exc, source)
             if source == SOURCE_FETCHED and self._mismatches >= MISMATCHES_BEFORE_FORGETTING:
                 # The device was reset or re-keyed: the fetched key is outdated, fetch it again.
                 self.keys.forget(adv.address, adv.name)
@@ -150,7 +152,7 @@ class DeviceTracker:
         except AdvertError as exc:
             self.stats.undecodable += 1
             if self.stats.undecodable == 1:
-                log.warning("%s: cannot decode the advertisement: %s", adv.address, exc)
+                log.warning("Cannot decode the advertisement of %s: %s", adv.address, exc)
             return
         self._mismatches = 0
         self.stats.decoded += 1
@@ -286,4 +288,4 @@ class DeviceTracker:
         try:
             self._emit_event(Event(datetime.now().astimezone(), kind, device, data))
         except Exception:
-            log.exception("event callback failed")
+            self._failures.exception("event callback", "Cannot emit the %s event", kind)

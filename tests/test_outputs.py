@@ -1,4 +1,5 @@
 import json
+import logging
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
@@ -202,3 +203,26 @@ def test_a_failing_sink_does_not_affect_the_others():
 
     Outputs([Broken(), Good()]).emit_reading(reading())
     assert len(got) == 1
+
+
+def test_a_failing_sink_is_logged_with_a_traceback_once_and_its_recovery_once(caplog):
+    class Flaky:
+        broken = True
+
+        def emit_reading(self, r):
+            if self.broken:
+                raise RuntimeError("boom")
+
+        emit_event = emit_state = close = emit_reading
+
+    sink = Flaky()
+    outputs = Outputs([sink])
+    with caplog.at_level(logging.DEBUG, logger="smartsolar.outputs"):
+        for _ in range(3):
+            outputs.emit_reading(reading())
+        sink.broken = False
+        outputs.emit_reading(reading())
+        outputs.emit_reading(reading())
+    assert [(r.levelname, r.exc_info is not None) for r in caplog.records] == [("ERROR", True), ("DEBUG", False), ("DEBUG", False), ("INFO", False)]
+    assert caplog.records[0].getMessage() == "Output Flaky failed in emit_reading"
+    assert caplog.records[-1].getMessage() == "Output Flaky works again in emit_reading"

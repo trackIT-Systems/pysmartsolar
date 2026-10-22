@@ -31,6 +31,7 @@ from bleak.exc import BleakDBusError, BleakDeviceNotFoundError, BleakError
 
 from smartsolar.ble import Advertisement
 from smartsolar.errors import ConnectError, LinkError, NotConnectedError, PairingError
+from smartsolar.failures import Failures
 from smartsolar.instant import COMPANY_ID, PREFIX
 from smartsolar.vreg import CHAR_UUIDS
 
@@ -77,6 +78,8 @@ def map_pair_error(exc: BaseException) -> PairingError:
 
 
 class BleakLink:
+    system_pairing_logged = False  # said once per process: every connection asks again
+
     def __init__(self, address: str, client: Any, agent: Any = None) -> None:
         self.address = address
         self._client = client
@@ -133,7 +136,9 @@ class BleakLink:
             await asyncio.wait_for(self._client.pair(), timeout_s)
         except NotImplementedError:
             # CoreBluetooth cannot be told to pair: the system asks when an encrypted characteristic is first used.
-            log.info("pairing is left to the operating system (it asks for the passkey when needed)")
+            level = logging.DEBUG if BleakLink.system_pairing_logged else logging.INFO
+            BleakLink.system_pairing_logged = True
+            log.log(level, "Pairing with %s is left to the operating system (it asks for the passkey when needed)", self.address)
         except TimeoutError:
             raise PairingError(f"pairing did not finish within {timeout_s:g} s (enter the passkey in the system dialog)") from None
         except Exception as exc:
@@ -155,10 +160,14 @@ class BleakBackend:
         self._adapter = adapter
         self._scanner: Any = None
         self._on_advert: Callable[[Advertisement], None] | None = None
+        self._failures = Failures(log)
+        self._adapter_warned = False
 
     def _kwargs(self) -> dict[str, Any]:
         if self._adapter and not HAS_AGENT:
-            log.warning("ble.adapter is only used with BlueZ on Linux, ignored here")
+            if not self._adapter_warned:  # asked at every scan and connection
+                self._adapter_warned = True
+                log.warning("The ble.adapter setting is only used with BlueZ on Linux, ignored here")
             return {}
         return {"adapter": self._adapter} if self._adapter else {}
 
@@ -197,7 +206,10 @@ class BleakBackend:
         try:
             await asyncio.wait_for(scanner.stop(), SCANNER_STOP_TIMEOUT_S)
         except Exception as exc:
-            log.warning("stopping the scanner failed: %s", exc)
+            error = str(exc) or type(exc).__name__
+            self._failures.failed("scanner stop", error, "Cannot stop the BLE scanner: %s", error)
+        else:
+            self._failures.succeeded("scanner stop", "Stopping the BLE scanner works again")
 
     async def stop_scan(self) -> None:
         self._on_advert = None
@@ -253,7 +265,10 @@ class BleakBackend:
                 try:
                     await self._start_scanner()
                 except Exception as exc:
-                    log.warning("restarting the scanner failed: %s", exc)
+                    error = str(exc) or type(exc).__name__
+                    self._failures.failed("scanner restart", error, "Cannot restart the BLE scanner after connecting: %s", error)
+                else:
+                    self._failures.succeeded("scanner restart", "Restarting the BLE scanner after connecting works again")
         return BleakLink(adv.address, client, agent)
 
     @staticmethod
@@ -262,7 +277,7 @@ class BleakBackend:
             try:
                 await agent.__aexit__(None, None, None)
             except Exception as exc:
-                log.debug("dropping the agent: %r", exc)
+                log.debug("Cannot unregister the pairing agent after a failed connection: %r", exc)
 
     @staticmethod
     async def _cleanup(client: Any) -> None:
@@ -271,4 +286,4 @@ class BleakBackend:
         try:
             await asyncio.wait_for(client.disconnect(), DISCONNECT_TIMEOUT_S)
         except BaseException as exc:  # best effort, also when cancelled again
-            log.debug("cleanup disconnect: %r", exc)
+            log.debug("Cannot close the BLE connection after a failed connect: %r", exc)

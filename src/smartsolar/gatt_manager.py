@@ -27,6 +27,7 @@ from smartsolar.ble import Advertisement, BleBackend, GattLink
 from smartsolar.config import GattConfig
 from smartsolar.backoff import Backoff
 from smartsolar.errors import ConnectError, NoDataError, NotConnectedError, ProtocolError, SmartsolarError, WriteFailed
+from smartsolar.failures import Failures
 from smartsolar.gatt_session import GattSession
 from smartsolar.reading import Event, Reading, device_id
 from smartsolar.registers import check_write, write_result
@@ -112,6 +113,8 @@ class GattManager:
         self._poll_now = False
         self._next_poll = 0.0
         self._paired: set[str] = set()
+        self._failures = Failures(log)
+        self._connected_before = False
 
     # -- requests from the outside ------------------------------------------
 
@@ -229,9 +232,13 @@ class GattManager:
 
     async def _session(self, adv: Advertisement) -> None:
         """Connect, do the work of the mode, disconnect; back off if it failed."""
+        connects = self.stats.connects
         failure = await self._connect_and_work(adv)
         if failure is not None:
             await self._failed(adv, failure)
+        elif self.stats.connects > connects:
+            # A held connection ends rarely (reconnect, another device); a poll or key fetch every time
+            log.log(logging.INFO if self.cfg.mode == "hold" else logging.DEBUG, "Disconnected from %s", adv.address)
 
     async def _connect_and_work(self, adv: Advertisement) -> BaseException | None:
         """Returns the error if the attempt failed. The link is closed before this returns."""
@@ -278,6 +285,13 @@ class GattManager:
             up_since = self._clock()
             self.connected_since = datetime.now().astimezone()
             self._set_state(GattState.CONNECTED)
+            # A held connection is a one-off event; polls connect periodically, so only the first one is told.
+            # While a failure is logged, connecting is no recovery yet: that is the first data (`_works`).
+            first = not self._connected_before or self.cfg.mode == "hold"
+            if self._failures.failing("connect"):
+                first = False
+            log.log(logging.INFO if first else logging.DEBUG, "Connected to %s over GATT", adv.address)
+            self._connected_before = True
             self._event("connected", adv.address, rssi=round(adv.rssi), mode=self.cfg.mode)
             try:
                 await self._work(adv, session)
@@ -318,6 +332,12 @@ class GattManager:
             await self._collect(adv, session)
         elif self.cfg.mode == "hold":
             await self._hold(adv, session)
+        else:
+            self._works(adv)
+
+    def _works(self, adv: Advertisement) -> None:
+        """The attempt did what it connected for: a logged connection failure has ended."""
+        self._failures.succeeded("connect", "GATT with %s works again", adv.address)
 
     async def _wait_expected(self, session: GattSession, max_s: float) -> None:
         deadline = self._clock() + max_s
@@ -341,6 +361,7 @@ class GattManager:
         self._next_poll = self._clock() + self.cfg.poll_interval_s
         self.next_poll_mono = self._next_poll
         self._emit_reading(reading)
+        self._works(adv)
         for future in self._poll_futures:
             if not future.done():
                 future.set_result(reading)
@@ -362,6 +383,7 @@ class GattManager:
                 if reading is not None:
                     self._emit_reading(reading)
                     self.last_poll = reading.time
+                    self._works(adv)
                 next_publish = self._clock() + self.cfg.publish_interval_s
             await self._sleep(max(0.0, min(1.0, next_publish - self._clock())))
 
@@ -376,7 +398,7 @@ class GattManager:
                     except (NotConnectedError, _Stopping):
                         raise
                     except ProtocolError as exc:
-                        log.debug("read of 0x%04x: %s", vreg, exc)  # not available on this model or firmware
+                        log.debug("Cannot read register 0x%04x over GATT: %s", vreg, exc)  # not available on this model or firmware
                 if not values:
                     raise NoDataError("the device answered none of the registers")
                 future.set_result(values)
@@ -435,7 +457,7 @@ class GattManager:
         message = str(exc) or type(exc).__name__
         self.stats.last_error = message
         delay = self.stats.backoff_s = self._backoff.next()
-        log.info("gatt connection to %s failed: %s (retry in %.1f s)", adv.address, message, delay)
+        self._failures.failed("connect", message, "GATT connection to %s failed: %s (retry in %.1f s)", adv.address, message, delay)
         self._event("gatt_failed", adv.address, error=message, retry_in_s=round(delay, 1))
         self._set_state(GattState.BACKOFF)
         await self._sleep(delay)
@@ -489,7 +511,7 @@ class GattManager:
         try:
             await asyncio.wait_for(link.disconnect(), DISCONNECT_TIMEOUT_S)
         except Exception as exc:
-            log.debug("disconnect: %s", exc)
+            log.debug("Cannot close the GATT link: %s", exc)
 
     async def _teardown(self) -> None:
         for future in self._poll_futures + self._key_futures + [f for _, f in self._write_requests + self._read_requests]:
@@ -504,15 +526,15 @@ class GattManager:
         if state is self.state:
             return
         self.state = state
-        log.info("gatt state: %s", state.value)
+        log.debug("GATT state: %s", state.value)  # cycles through connecting and backoff while retrying
         if self._on_state is not None:
             try:
                 self._on_state(state)
             except Exception:
-                log.exception("state callback failed")
+                self._failures.exception("state callback", "Cannot hand on the GATT state %s", state.value)
 
     def _event(self, kind: str, device: str | None, **data: Any) -> None:
         try:
             self._emit_event(Event(datetime.now().astimezone(), kind, device, data))
         except Exception:
-            log.exception("event callback failed")
+            self._failures.exception("event callback", "Cannot emit the %s event", kind)

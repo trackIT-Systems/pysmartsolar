@@ -12,7 +12,6 @@ import asyncio
 import logging
 import signal
 import socket
-import sys
 import time
 from dataclasses import replace
 from datetime import datetime
@@ -23,6 +22,7 @@ from smartsolar import __version__
 from smartsolar.ble import BleBackend
 from smartsolar.config import AppConfig, load_config
 from smartsolar.errors import BadRequest, ConfigError, ConnectError, NoDataError, NotConnectedError, ProtocolError, SmartsolarError
+from smartsolar.failures import Failures
 from smartsolar.gatt_manager import GattManager, GattState
 from smartsolar.journal import log_handler
 from smartsolar.keys import KeyStore
@@ -48,7 +48,7 @@ from smartsolar.vreg import (
     product_id,
 )
 
-log = logging.getLogger("smartsolard")
+log = logging.getLogger(__name__)
 
 SCAN_RETRY_S = 10.0
 SCAN_WATCHDOG_S = 180.0
@@ -76,12 +76,12 @@ def build_outputs(config: AppConfig, hostname: str | None = None) -> Outputs:
     csv_output = None
     if config.daemon.csv.enabled:
         csv_output = CsvOutput(config.daemon.csv.path, hostname)
-        log.info("csv files in %s", csv_output.dir)
+        log.info("Writing CSV files to %s", csv_output.dir)
         sinks.append(csv_output)
     if config.daemon.mqtt.enabled:
         sinks.append(MqttOutput(config.daemon.mqtt, hostname, clock=csv_output.clock if csv_output else Clock()))
     if not sinks:
-        log.warning("no outputs enabled; readings are only available through the CLI")
+        log.warning("No outputs are enabled, readings are only available through the CLI")
     return Outputs(sinks)
 
 
@@ -163,6 +163,7 @@ class Daemon:
         self.stop_event = asyncio.Event()
         self._started_mono = time.monotonic()
         self._last_published: dict[str, Reading | None] = {}
+        self._failures = Failures(log)
 
     # -- events and state ---------------------------------------------------
 
@@ -257,7 +258,7 @@ class Daemon:
         try:
             done, _ = await asyncio.wait({*tasks, stopper}, return_when=asyncio.FIRST_COMPLETED)
             for task in done - {stopper}:
-                log.error("task %s ended unexpectedly: %r", task.get_name(), task.exception() if not task.cancelled() else "cancelled")
+                log.error("Task %s ended unexpectedly: %r", task.get_name(), task.exception() if not task.cancelled() else "cancelled")
                 exit_code = 1
         finally:
             await self._shutdown(tasks, stopper)
@@ -276,7 +277,7 @@ class Daemon:
                 signal.signal(sig, lambda *_: loop.call_soon_threadsafe(self.stop_event.set))
 
     async def _shutdown(self, tasks: list[asyncio.Task], stopper: asyncio.Task) -> None:
-        log.info("shutting down")
+        log.info("Shutting down")
         stopper.cancel()
         await self.server.stop()
         self.gatt.stop()
@@ -288,33 +289,52 @@ class Daemon:
             try:
                 await self.backend.stop_scan()
             except Exception as exc:
-                log.warning("stopping the scan failed: %s", exc)
+                error = str(exc) or type(exc).__name__
+                self._failures.failed("scan stop", error, "Cannot stop the scan: %s", error)
         self._on_event(Event(datetime.now().astimezone(), "daemon_stopped"))
         self.outputs.emit_state({**self.state_payload(), "state": "offline", "device": None, "rssi": None})
         self.outputs.close()
-        log.info("stopped")
+        log.info("Stopped")
 
     async def _scan_supervisor(self) -> None:
         """Keep the permanent scan running: start it, retry if that fails, restart it if it goes quiet."""
+        started_before = False
+        restarted_at: float | None = None  # when the watchdog restarted the scan, until an advertisement arrives again
         while True:
             try:
                 await self.backend.start_scan(self.tracker.on_advert)
             except Exception as exc:
-                log.warning("cannot start the scan: %s (retrying in %g s)", exc, SCAN_RETRY_S)
+                error = str(exc) or type(exc).__name__
+                self._failures.failed("scan start", error, "Cannot start the scan: %s (retrying every %g s)", error, SCAN_RETRY_S)
                 await asyncio.sleep(SCAN_RETRY_S)
                 continue
-            log.info("scanning for Victron advertisements")
+            if not self._failures.succeeded("scan start", "Starting the scan works again"):
+                # The first start is told; a restart by the watchdog is already told by it
+                log.log(logging.DEBUG if started_before else logging.INFO, "Scanning for Victron advertisements")
+            started_before = True
             while True:
                 await asyncio.sleep(SCAN_CHECK_S)
                 last = self.tracker.last_advert_mono
+                if restarted_at is not None and last is not None and last > restarted_at:
+                    self._failures.succeeded("scan watchdog", "Advertisements from %s arrive again", self.tracker.current_address)
+                    restarted_at = None
                 if self.tracker.current_address is not None and last is not None and time.monotonic() - last > SCAN_WATCHDOG_S:
-                    log.warning("no advertisement from %s for %g s, restarting the scan", self.tracker.current_address, SCAN_WATCHDOG_S)
+                    self._failures.failed(
+                        "scan watchdog",
+                        self.tracker.current_address,
+                        "No advertisement from %s for %g s, restarting the scan",
+                        self.tracker.current_address,
+                        SCAN_WATCHDOG_S,
+                    )
                     self._on_event(Event(datetime.now().astimezone(), "scan_restarted", self.tracker.current_address))
-                    self.tracker.last_advert_mono = time.monotonic()
+                    restarted_at = self.tracker.last_advert_mono = time.monotonic()
                     try:
                         await self.backend.stop_scan()
                     except Exception as exc:
-                        log.warning("stopping the scan failed: %s", exc)
+                        error = str(exc) or type(exc).__name__
+                        self._failures.failed("scan stop", error, "Cannot stop the scan: %s", error)
+                    else:
+                        self._failures.succeeded("scan stop", "Stopping the scan works again")
                     break
 
     async def _selection_loop(self) -> None:
@@ -598,17 +618,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=None, help="config file (default: /etc/smartsolar/smartsolar.yml)")
     parser.add_argument("-v", "--verbose", action="count", default=0, help="more log output (-v: DEBUG)")
     args = parser.parse_args(argv)
+    # The level is in the config: log at WARNING until it is loaded, so that its errors reach the journal too
+    logging.basicConfig(level=logging.WARNING, handlers=[log_handler("smartsolard")])
     try:
         config = load_config(args.config)
     except ConfigError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        log.critical("Cannot load the configuration: %s", exc)
         return 1
-    level = logging.DEBUG if args.verbose else getattr(logging, config.daemon.log_level)
-    logging.basicConfig(level=level, handlers=[log_handler("smartsolard")])
+    logging.getLogger().setLevel(logging.DEBUG if args.verbose else getattr(logging, config.daemon.log_level))
     try:
         return asyncio.run(Daemon(config).run())
     except (SmartsolarError, OSError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        log.critical("Cannot continue: %s", exc)
         return 1
 
 
