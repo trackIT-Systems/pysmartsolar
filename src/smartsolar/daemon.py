@@ -23,14 +23,14 @@ from smartsolar.ble import BleBackend
 from smartsolar.config import AppConfig, load_config
 from smartsolar.errors import BadRequest, ConfigError, ConnectError, NoDataError, NotConnectedError, ProtocolError, SmartsolarError
 from smartsolar.failures import Failures
-from smartsolar.gatt_manager import GattManager, GattState
+from smartsolar.gatt_manager import GattManager
 from smartsolar.journal import log_handler
 from smartsolar.keys import KeyStore
 from smartsolar.outputs import Output, Outputs
 from smartsolar.clock import Clock
 from smartsolar.outputs.csv import CsvOutput
 from smartsolar.outputs.mqtt import MqttOutput
-from smartsolar.reading import Event, Reading, device_id, local_iso, utc_iso
+from smartsolar.reading import Event, Reading, device_id, utc_iso
 from smartsolar.server import ControlServer
 from smartsolar.serial_manager import SerialManager
 from smartsolar.state import BLOCKS, AdvertStats, Cache, GattStats, SerialStats
@@ -150,7 +150,6 @@ class Daemon:
             self._on_event,
             self._on_gatt_reading,
             self.gatt_stats,
-            on_state=self._on_gatt_state,
         )
         self.serial_stats = SerialStats()
         self.serial: SerialManager | None = None
@@ -186,7 +185,6 @@ class Daemon:
     def _on_serial(self, serial: str | None) -> None:
         if self.config.ble.enabled:
             self.tracker.set_serial(serial)
-        self.outputs.emit_state(self.state_payload())
 
     def _on_event(self, event: Event) -> None:
         if event.device is not None and event.device in self.tracker.seen:  # an address (MAC or macOS UUID): use the serial
@@ -197,32 +195,14 @@ class Daemon:
 
     def _on_select(self) -> None:
         self.gatt.poke()
-        self.outputs.emit_state(self.state_payload())
 
     def _on_switch(self) -> None:
         self.cache.clear("advert", "gatt")
         self.gatt.device_changed()
 
-    def _on_gatt_state(self, state: GattState) -> None:
-        self.outputs.emit_state(self.state_payload())
-
     def _on_gatt_reading(self, reading: Reading) -> None:
         self.cache.update(reading)
         self.outputs.emit_reading(reading)
-
-    def state_payload(self) -> dict[str, Any]:
-        current = self.tracker.current
-        seen = self.tracker.seen.get(self.tracker.current_address or "")
-        return {
-            "_time": local_iso(datetime.now().astimezone()),
-            "state": "running",
-            "device": self._current_id(),
-            "address": current.address if current else None,
-            "rssi": round(seen.rssi) if seen else None,
-            "gatt_mode": self.config.gatt.mode if self.config.ble.enabled else None,
-            "gatt": self.gatt.state.value if self.config.ble.enabled else None,
-            "serial": None if self.serial is None else self.serial.state,
-        }
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -238,7 +218,6 @@ class Daemon:
                 {"version": __version__, "ble": self.config.ble.enabled, "gatt_mode": self.config.gatt.mode, "serial": self.serial is not None},
             )
         )
-        self.outputs.emit_state(self.state_payload())
         await self.server.start()
         tasks = []
         if self.config.ble.enabled:
@@ -292,7 +271,6 @@ class Daemon:
                 error = str(exc) or type(exc).__name__
                 self._failures.failed("scan stop", error, "Cannot stop the scan: %s", error)
         self._on_event(Event(datetime.now().astimezone(), "daemon_stopped"))
-        self.outputs.emit_state({**self.state_payload(), "state": "offline", "device": None, "rssi": None})
         self.outputs.close()
         log.info("Stopped")
 

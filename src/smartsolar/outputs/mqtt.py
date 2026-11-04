@@ -5,16 +5,15 @@
   best source that delivers wins (VE.Direct, then GATT, then the advertisements).
   ``{device}`` is the serial number, or the MAC address as 12 hex digits.
 * ``{host}/smartsolar/events/{fmt}``: connection events, not rate-limited
-* ``{host}/smartsolar/state/{json,cbor}``: connection state as a map, retained; the
-  will sets it to offline
 
-See docs/outputs.md for the columns and encodings.
+Nothing is retained and nothing carries a time: a message that arrives is
+current, and the receiver stamps it (tsOS-base docs/time.md). See
+docs/outputs.md for the columns and encodings.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import socket
 import threading
@@ -22,7 +21,6 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-import cbor2
 import paho.mqtt.client as mqtt
 
 from smartsolar.clock import Clock
@@ -74,7 +72,6 @@ class MqttOutput:
         self._interval = config.publish_interval_s
         self._hostname = hostname or socket.gethostname()
         self._formats = [f for f in ENCODERS if getattr(config, f)]
-        self._state_formats = [f for f in ("json", "cbor") if getattr(config, f)]
         self._clock = clock or Clock()
         self._monotonic = monotonic
         self._scheduler = scheduler
@@ -87,19 +84,9 @@ class MqttOutput:
         self._timers: dict[str, Any] = {}
         self._seen: dict[str, dict[int, float]] = {}
         self._client = client if client is not None else make_client()
-        for fmt in self._state_formats:
-            self._client.will_set(
-                topic(self._hostname, "state", fmt), self._encode_map({"state": "offline"}, fmt), qos=self._qos, retain=True
-            )
         # connect_async: the daemon must start even if the broker is not up yet.
         self._client.connect_async(config.host, config.port)
         self._client.loop_start()
-
-    @staticmethod
-    def _encode_map(payload: dict[str, Any], fmt: str) -> bytes:
-        if fmt == "cbor":
-            return cbor2.dumps(payload)
-        return json.dumps(payload, default=str).encode("utf-8")
 
     def _publish(self, name: str, record: Record) -> None:
         for fmt in self._formats:
@@ -153,10 +140,6 @@ class MqttOutput:
 
     def emit_event(self, event: Event) -> None:
         self._publish(EVENTS, event_record(event, self._clock.synced()))
-
-    def emit_state(self, state: dict[str, Any]) -> None:
-        for fmt in self._state_formats:
-            self._client.publish(topic(self._hostname, "state", fmt), self._encode_map(state, fmt), qos=self._qos, retain=True)
 
     def close(self) -> None:
         # what is held back goes out before the connection closes

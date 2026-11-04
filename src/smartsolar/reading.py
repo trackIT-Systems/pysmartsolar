@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from smartsolar.clock import boottime
 
 
 def utc_iso(when: datetime) -> str:
@@ -64,8 +63,6 @@ class Reading:
     block: str
     time: datetime
     values: tuple[Value, ...]
-    # CLOCK_BOOTTIME when the reading was taken, to re-time it if the clock was not synced yet
-    boottime: float = field(default_factory=boottime)
 
 
 @dataclass(frozen=True)
@@ -74,7 +71,6 @@ class Event:
     kind: str
     device: str | None = None
     data: dict[str, Any] = field(default_factory=dict)
-    boottime: float = field(default_factory=boottime)
 
     def detail(self) -> str:
         """Compact ``k=v`` text for the CSV."""

@@ -5,25 +5,22 @@
 * ``<path>/<host>/smartsolar/events/<host>_<YYYY-MM-DD>_smartsolar-events.csv``
   (only the events in ``LOGGED_EVENTS``)
 
-Files are only written with a synced clock, because a wrong clock would put rows
-into the wrong day's file (or a file dated 1970). Until then rows go to a spool
-per boot and are re-timed by their CLOCK_BOOTTIME when the clock is synced. A
-spool left from an earlier boot cannot be re-timed; it becomes
-``<host>_unsynced_<boot_id>_smartsolar[-events].csv`` instead. Nothing is ever deleted.
+Rows are only written with a trusted clock (chrony has a source: NTP, GNSS or
+the checked RTC; tsOS-base docs/time.md), because a wrong clock would put them
+into the wrong day's file (or a file dated 1970), with a time nobody can
+correct. Until then readings only go over MQTT. Nothing is ever deleted.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import socket
-from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from smartsolar.clock import Clock
-from smartsolar.outputs.formats import EVENTS, LEADING_COLUMNS, Record, csv_line, event_record, reading_record
+from smartsolar.outputs.formats import EVENTS, Record, csv_line, event_record, reading_record
 from smartsolar.reading import Event, Reading
 
 log = logging.getLogger(__name__)
@@ -37,27 +34,17 @@ class CsvOutput:
     def __init__(self, path: Path, hostname: str | None = None, clock: Clock | None = None) -> None:
         self.host = hostname if hostname is not None else socket.gethostname()
         self.dir = Path(path) / self.host / APP
-        self.spool_dir = self.dir / ".spool"
-        self.clock = clock or Clock(self.spool_dir)
-        self.boot_id = self.clock.boot_id()
-        self.spool = self.spool_dir / f"{self.boot_id}.jsonl"
+        self.clock = clock or Clock()
+        # Whether rows are being dropped, to log when that starts and ends
+        self._dropping = False
         # fails at startup, not with the first reading, when the directory can't be made
         self.dir.mkdir(parents=True, exist_ok=True)
-        try:
-            self.recover()
-        except OSError as exc:
-            log.error("Cannot recover the spools in %s: %s", self.spool_dir, exc)
 
-    def _file(self, key: str, stem: str) -> Path:
+    def daily_file(self, key: str, when: datetime) -> Path:
+        stem = f"{self.host}_{when:%Y-%m-%d}"
         if key == EVENTS:
             return self.dir / EVENTS / f"{stem}_{APP}-{EVENTS}.csv"
         return self.dir / f"{stem}_{APP}.csv"
-
-    def daily_file(self, key: str, when: datetime) -> Path:
-        return self._file(key, f"{self.host}_{when:%Y-%m-%d}")
-
-    def unsynced_file(self, key: str, boot_id: str) -> Path:
-        return self._file(key, f"{self.host}_unsynced_{boot_id}")
 
     @staticmethod
     def _append(file: Path, header: list[str], row: list[Any]) -> None:
@@ -69,11 +56,14 @@ class CsvOutput:
 
     def _write(self, record: Record) -> None:
         if not record.synced:
-            self._spool(record)
+            if not self._dropping:
+                log.info("The clock is not trusted yet: rows go to %s once it is", self.dir)
+                self._dropping = True
             return
-        if self.spool.exists():
-            self.flush_spool()
-        self._append(self.daily_file(record.key, record.time), record.header, record.row)
+        if self._dropping:
+            log.info("The clock is trusted: writing rows to %s", self.dir)
+            self._dropping = False
+        self._append(self.daily_file(record.key, record.time), record.file_header, record.file_row)
 
     def emit_reading(self, reading: Reading) -> None:
         self._write(reading_record(reading, self.clock.synced(), with_block=True))
@@ -82,62 +72,5 @@ class CsvOutput:
         if event.kind in LOGGED_EVENTS:
             self._write(event_record(event, self.clock.synced()))
 
-    def emit_state(self, state: dict[str, Any]) -> None:
-        return
-
     def close(self) -> None:
         return
-
-    # --- the spool
-
-    def _spool(self, record: Record) -> None:
-        entry = {
-            "key": record.key,
-            "columns": record.columns,
-            "device": record.device,
-            "values": record.values,
-            "time": record.time.isoformat(),
-            "boottime": record.boottime,
-        }
-        self.spool_dir.mkdir(parents=True, exist_ok=True)
-        with self.spool.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(entry, default=str) + "\n")
-
-    @staticmethod
-    def _read_spool(spool: Path) -> Iterator[dict[str, Any]]:
-        with spool.open(encoding="utf-8") as handle:
-            for number, line in enumerate(handle, 1):
-                try:
-                    yield json.loads(line)
-                except json.JSONDecodeError:
-                    # e.g. the last line of a spool cut off by a power loss
-                    log.warning("Skipping unreadable line %d of %s", number, spool)
-
-    def flush_spool(self) -> None:
-        """Re-time this boot's spooled rows with the now synced clock and write them out."""
-        offset = self.clock.time() - self.clock.boottime()
-        count = 0
-        for entry in self._read_spool(self.spool):
-            when = datetime.fromtimestamp(round(offset + entry["boottime"])).astimezone()
-            header = [*LEADING_COLUMNS, *entry["columns"]]
-            self._append(self.daily_file(entry["key"], when), header, [when, False, entry["device"], *entry["values"]])
-            count += 1
-        self.spool.unlink()
-        log.info("Clock synced: wrote %d spooled rows to the daily files", count)
-
-    def recover(self) -> None:
-        """Turn spools of earlier boots into `_unsynced_` files; their times cannot be corrected."""
-        if not self.spool_dir.is_dir():
-            return
-        for spool in sorted(self.spool_dir.glob("*.jsonl")):
-            if spool == self.spool:
-                continue
-            boot_id = spool.stem
-            count = 0
-            for entry in self._read_spool(spool):
-                header = [*LEADING_COLUMNS, *entry["columns"]]
-                row = [entry["time"], False, entry["device"], *entry["values"]]
-                self._append(self.unsynced_file(entry["key"], boot_id), header, row)
-                count += 1
-            spool.unlink()
-            log.warning("Boot %s never had a synced clock: wrote %d rows to its unsynced files", boot_id, count)

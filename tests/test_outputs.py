@@ -28,7 +28,7 @@ def reading(block="advert", voltage=13.31, when=WHEN):
         Value("device_state", "Device state", "", "off"),
         Value("pv_power", "PV power", "W", None),
     )
-    return Reading(MAC, block, when, values, boottime=50.0)
+    return Reading(MAC, block, when, values)
 
 
 def mqtt(**config):
@@ -53,20 +53,20 @@ def test_all_formats_carry_the_same_columns_in_the_same_order():
     as_json = json.loads(encode_json(record))
     as_cbor = cbor2.loads(encode_cbor(record))
     as_csv = encode_csv(record).decode().split(";")
-    assert list(as_json)[:4] == ["time", "synced", "device", COLUMNS[0]]
-    assert len(as_json) == len(as_cbor) == len(as_csv) == 3 + len(COLUMNS)
-    assert list(as_json.values())[1:] == as_cbor[1:]
+    assert list(as_json)[:2] == ["device", COLUMNS[0]]
+    assert len(as_json) == len(as_cbor) == len(as_csv) == 1 + len(COLUMNS)
+    assert list(as_json.values()) == as_cbor
     assert as_json["battery_voltage"] == 13.31 and as_json["pv_power"] is None
     assert "block" not in as_json and "source" not in as_json
 
 
-def test_time_has_its_offset_and_whole_seconds_and_cbor_uses_tag_0():
+def test_mqtt_records_carry_no_time():
+    """The receiver stamps a reading on arrival (tsOS-base docs/time.md)."""
     record = reading_record(reading(), synced=False)
-    assert json.loads(encode_json(record))["time"] == LOCAL
-    assert encode_csv(record).startswith(f"{LOCAL};False;F7:48:18:8A:77:9D;".encode())
-    raw = encode_cbor(record)
-    assert raw[:3] == bytes([0x98, 3 + len(COLUMNS), 0xC0])  # array header (2 bytes), then tag 0
-    assert cbor2.loads(raw)[0].utcoffset() == WHEN.astimezone().utcoffset()
+    assert "time" not in json.loads(encode_json(record)) and "synced" not in json.loads(encode_json(record))
+    assert encode_csv(record).startswith(b"F7:48:18:8A:77:9D;")
+    assert record.file_header[:2] == ["time", "device"]
+    assert record.file_row[0].isoformat() == LOCAL
 
 
 # --- MQTT
@@ -147,16 +147,13 @@ def test_mqtt_close_sends_what_is_held_back():
     assert sent(client) == [1.0, 2.0] and client.looping is False
 
 
-def test_mqtt_events_in_three_formats_state_retained_as_map_and_will_offline():
+def test_mqtt_events_in_three_formats_nothing_retained():
     out, client, _, _ = mqtt()
-    assert {(t, r) for t, _, r in client.wills} == {("tracker/smartsolar/state/json", True), ("tracker/smartsolar/state/cbor", True)}
-    out.emit_state({"state": "running"})
     out.emit_event(Event(WHEN, "device_selected", MAC, {"rssi": -60}))
-    retained = {t: r for t, _, r in client.published}
-    assert retained["tracker/smartsolar/state/json"] is True and "tracker/smartsolar/state/csv" not in retained
-    assert retained["tracker/smartsolar/events/cbor"] is False
+    assert [t for t, _, _ in client.published] == [f"tracker/smartsolar/events/{fmt}" for fmt in ("csv", "json", "cbor")]
+    assert not any(retain for _, _, retain in client.published)
     event = json.loads({t: p for t, p, _ in client.published}["tracker/smartsolar/events/json"])
-    assert event == {"time": LOCAL, "synced": True, "device": MAC, "event": "device_selected", "detail": "rssi=-60"}
+    assert event == {"device": MAC, "event": "device_selected", "detail": "rssi=-60"}
 
 
 # --- CSV files
@@ -169,9 +166,9 @@ def test_csv_one_file_per_day_for_all_sources_with_the_block(tmp_path):
     out.emit_reading(reading("gatt", when=WHEN + timedelta(days=1)))
     base = tmp_path / "tracker" / "smartsolar"
     day1 = (base / "tracker_2026-10-13_smartsolar.csv").read_text(encoding="utf-8").splitlines()
-    assert day1[0] == ";".join(["time", "synced", "device", "block", *COLUMNS])
-    assert day1[1].startswith(f"{LOCAL};True;F7:48:18:8A:77:9D;advert;")
-    assert day1[2].split(";")[3] == "vedirect" and len(day1) == 3
+    assert day1[0] == ";".join(["time", "device", "block", *COLUMNS])
+    assert day1[1].startswith(f"{LOCAL};F7:48:18:8A:77:9D;advert;")
+    assert day1[2].split(";")[2] == "vedirect" and len(day1) == 3
     assert (base / "tracker_2026-10-14_smartsolar.csv").exists()
 
 
@@ -179,9 +176,8 @@ def test_csv_logs_the_listed_events_in_their_own_file(tmp_path):
     out = CsvOutput(tmp_path, "tracker", clock=FakeClock(synced=True))
     out.emit_event(Event(WHEN, "key_fetched", MAC))
     out.emit_event(Event(WHEN, "gatt_failed", MAC, {"error": "timeout"}))  # not logged
-    out.emit_state({"state": "running"})
     lines = (tmp_path / "tracker/smartsolar/events/tracker_2026-10-13_smartsolar-events.csv").read_text(encoding="utf-8").splitlines()
-    assert lines == ["time;synced;device;event;detail", f"{LOCAL};True;{MAC};key_fetched;"]
+    assert lines == ["time;device;event;detail", f"{LOCAL};{MAC};key_fetched;"]
 
 
 def test_a_failing_sink_does_not_affect_the_others():
@@ -189,7 +185,7 @@ def test_a_failing_sink_does_not_affect_the_others():
         def emit_reading(self, r):
             raise RuntimeError("boom")
 
-        emit_event = emit_state = close = emit_reading
+        emit_event = close = emit_reading
 
     got = []
 
@@ -198,7 +194,6 @@ def test_a_failing_sink_does_not_affect_the_others():
             got.append(r)
 
         def emit_event(self, e): ...
-        def emit_state(self, s): ...
         def close(self): ...
 
     Outputs([Broken(), Good()]).emit_reading(reading())
@@ -213,7 +208,7 @@ def test_a_failing_sink_is_logged_with_a_traceback_once_and_its_recovery_once(ca
             if self.broken:
                 raise RuntimeError("boom")
 
-        emit_event = emit_state = close = emit_reading
+        emit_event = close = emit_reading
 
     sink = Flaky()
     outputs = Outputs([sink])

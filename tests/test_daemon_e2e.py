@@ -143,12 +143,13 @@ def test_outputs_have_the_expected_content():
             rows = env.csv_rows()
             events = env.csv_rows("events")
             await env.stop()
-            states = [json.loads(p) for t, p, _ in env.mqtt.published if t == "tracker/smartsolar/state/json"]
-            assert states[0]["state"] == "running" and states[-1]["state"] == "offline"
+            assert not any("/state/" in t for t, _, _ in env.mqtt.published)
+            assert not any(retain for _, _, retain in env.mqtt.published)
             kinds = {json.loads(p)["event"] for t, p, _ in env.mqtt.published if t == "tracker/smartsolar/events/json"}
             assert {"daemon_started", "device_selected", "daemon_stopped"} <= kinds
             as_json, as_cbor = json.loads(env.published("json")[0]), cbor2.loads(env.published("cbor")[0])
-            assert list(as_json.values())[1:] == as_cbor[1:] and as_json["battery_voltage"] in (13.31, 13.4)
+            assert list(as_json.values()) == as_cbor and as_json["battery_voltage"] in (13.31, 13.4)
+            assert "time" not in as_json and "synced" not in as_json
             assert "source" not in as_json and "block" not in as_json
             assert any(r["block"] == "advert" and r["battery_voltage"] in ("13.31", "13.4") for r in rows)
             assert any(r["event"] == "device_selected" for r in events)
