@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 
 - **Chargers with Instant Readout disabled are read over GATT** (#5). Such a charger advertises only its product id (`10 02 | model`). It is now selected, after any charger with Instant Readout, and read over GATT without fetching a key: in `gatt.mode`, or, while that is `off`, in the new `gatt.fallback` (default `hold`; `off` restores the old behaviour). It is recognised by its product id or its `SmartSolar` name; `smartsolar scan` shows `readout off` and `status` "Instant Readout off, GATT only". The scan watchdog leaves it alone (its adverts are mostly not reported while the access point is up), and a connect falls back to the device BlueZ knows from its last advert when the lookup does not find it again. While the 2.4 GHz access point is up, finding and connecting to it takes many attempts; a held connection then stays.
+- **Passive scanning.** On Linux, the scan for advertisements and the lookup before a GATT connection are passive where BlueZ offers `AdvertisementMonitor1` (bluetoothd with `Experimental = true`), matching Victron's manufacturer data. A passive scan sends no scan requests:
+  - It needs no scan response. During an active scan BlueZ reports a connectable advertisement only together with its scan response, and with the Pi's Wi-Fi access point up none arrives: a SmartSolar went unseen for good (measured on a Pi 4 with the hotspot up: last seen 38 minutes ago while its adverts reached the controller several times a second).
+  - It needs no random address, which the controller refuses while the station advertises: the kernel logged `Bluetooth: hci0: Opcode 0x2005 failed: -16` at every scan restart, about every 10 s (tsOS-base#50).
+  - The name, and with it the serial number, is only in the scan response. BlueZ keeps the names it has seen (`/var/lib/bluetooth/<adapter>/cache`), so a charger seen once in an active scan keeps its serial number; a new one is known by its MAC address until then.
+  - bleak reports an advertisement in a passive scan only when its data changes, so a charger with Instant Readout off (always the same bytes) was not reported to a daemon started after bluetoothd. BlueZ calls `DeviceFound` on the advertisement monitor for every advert; the daemon replaces bleak's monitor class at runtime (in its own process, bleak's files are unchanged) by one that reports each of them. Without the bleak internals this needs, `auto` scans actively.
+
+  `ble.scanning` chooses: `auto` (default: passive, else active with one warning), `passive` (no fallback) or `active`. macOS and Windows always scan actively.
 
 ### Fixed
 

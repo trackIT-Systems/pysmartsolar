@@ -19,6 +19,7 @@ An example config for macOS with the paths and notes below is [config/smartsolar
 * **Pairing.** Only BlueZ lets a program answer the passkey request, so the D-Bus agent (`smartsolar.ble.agent`, `dbus-fast`) exists on Linux only. On Windows the library asks the system to pair and Windows shows its dialog; on macOS CoreBluetooth cannot be told to pair at all, the system asks the first time an encrypted characteristic is used. In both cases `gatt.passkey` is not used: type the passkey (default `000000`) in the system dialog. The key fetch (`fetch-key`) therefore needs somebody at the machine once.
 * **Device identity.** macOS hides MAC addresses: devices show up with a UUID that is only valid on that Mac. Name devices by **serial number** (`HQ22294ZGEU`, part of the BLE name) in `ble.address` and in `keys:`; that works on every system, and keys fetched over GATT are stored under the serial number for the same reason. MAC addresses and UUIDs keep working where they exist.
 * **`ble.adapter`** selects a BlueZ adapter (`hci0`) and is ignored elsewhere (with a warning).
+* **Passive scanning** (`ble.scanning`) exists with BlueZ only, and only with bluetoothd's experimental interfaces (`Experimental = true` in `/etc/bluetooth/main.conf`, or `bluetoothd --experimental`). Elsewhere the scan is active ([quirks.md](quirks.md)).
 * The Wi-Fi/Bluetooth coexistence problem of the Raspberry Pi ([quirks.md](quirks.md)) does not apply to PCs with separate radios; GATT should be much more reliable there.
 
 ## Control socket

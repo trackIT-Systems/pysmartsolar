@@ -10,6 +10,8 @@ ble:
   select_window_s: 10            # listen this long before the first device selection
   rescan_interval_s: 3600        # how often the selection is reviewed
   switch_hysteresis_db: 10       # another device must be this much stronger to replace the current one
+  scanning: auto                 # auto: passive if BlueZ offers it (bluetoothd with Experimental = true), else active;
+                                 # passive; active. macOS always scans actively (docs/quirks.md)
 
 advert:
   # The Instant Readout advertisements are the main data source. The device sends a new reading

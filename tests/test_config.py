@@ -42,6 +42,7 @@ def test_full_config():
         ({"gatt": {"poll_interval_s": 0}}, "poll_interval_s"),
         ({"gatt": {"bogus": 1}}, "Unknown key"),
         ({"ble": {"switch_hysteresis_db": -1}}, "switch_hysteresis_db"),
+        ({"ble": {"scanning": "quiet"}}, "ble.scanning must be one of: auto, passive, active"),
         ({"advert": {"stale_after_s": "soon"}}, "must be a number"),
         ({"keys": {"not a mac": "00" * 16}}, "not a MAC address, a device UUID"),
         ({"keys": {"AA:BB:CC:DD:EE:FF": "1234"}}, "32 hex digits"),

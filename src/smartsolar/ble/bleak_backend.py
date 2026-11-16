@@ -9,6 +9,15 @@ Platform differences, all handled here:
   encrypted characteristic is used; the passkey from the config is not used there.
 * macOS gives devices a per-host UUID instead of a MAC address (``address`` is that UUID).
 * ``adapter`` selects a BlueZ adapter and means nothing elsewhere.
+* Only BlueZ scans passively (``AdvertisementMonitor1``, which bluetoothd offers with
+  ``Experimental = true``). A passive scan sends no scan requests, so it gets no scan responses
+  and needs none: BlueZ reports a connectable advertisement during an active scan only with
+  its scan response, which does not arrive while the Pi's Wi-Fi access point is up. It also
+  needs no random address, which the controller refuses while the station advertises (kernel
+  error ``Opcode 0x2005 failed: -16``, tsOS-base#50). The name, with the serial number, is only
+  in the scan response; BlueZ remembers it from an earlier active scan. bleak alone would report
+  an unchanged advertisement only once; ``smartsolar.ble.passive`` patches that, and without
+  that patch the scan is active.
 
 * One scanner runs all the time for the advertisements. A connect stops it, looks the device
   up again (BlueZ forgets devices it is not scanning for) and restarts it afterwards: BlueZ
@@ -27,9 +36,10 @@ from collections.abc import Callable
 from typing import Any
 
 from bleak import BleakClient, BleakScanner
+from bleak.assigned_numbers import AdvertisementDataType
 from bleak.exc import BleakDBusError, BleakDeviceNotFoundError, BleakError
 
-from smartsolar.ble import Advertisement
+from smartsolar.ble import Advertisement, passive
 from smartsolar.errors import ConnectError, LinkError, NotConnectedError, PairingError
 from smartsolar.failures import Failures
 from smartsolar.instant import COMPANY_ID, PREFIX
@@ -43,6 +53,14 @@ SCANNER_STOP_TIMEOUT_S = 5.0
 DISCONNECT_TIMEOUT_S = 10.0
 CONNECT_GRACE_S = 5.0
 LOOKUP_TIMEOUT_S = 10.0
+
+# What a passive scan reports: Victron's manufacturer data (the company ID, little endian)
+OR_PATTERNS = [(0, AdvertisementDataType.MANUFACTURER_SPECIFIC_DATA, COMPANY_ID.to_bytes(2, "little"))]
+
+
+def passive_unavailable(exc: BaseException) -> bool:
+    """bleak's error for a BlueZ without AdvertisementMonitor1 (bluetoothd without Experimental)."""
+    return isinstance(exc, BleakError) and "passive scanning" in str(exc).lower()
 
 
 def dbus_error_name(exc: BaseException) -> str:
@@ -156,12 +174,22 @@ class BleakLink:
 
 
 class BleakBackend:
-    def __init__(self, adapter: str | None = None) -> None:
+    def __init__(self, adapter: str | None = None, scanning: str = "auto") -> None:
         self._adapter = adapter
+        self._scanning = scanning
+        self._passive = scanning != "active" and HAS_AGENT  # until BlueZ turns out not to offer it
         self._scanner: Any = None
         self._on_advert: Callable[[Advertisement], None] | None = None
         self._failures = Failures(log)
         self._adapter_warned = False
+        if scanning == "passive" and not HAS_AGENT:
+            log.warning("ble.scanning: passive is only possible with BlueZ on Linux, scanning actively")
+        if self._passive and not passive.install():
+            if scanning == "auto":
+                self._passive = False
+                log.warning("Cannot make bleak report every advertisement in a passive scan, scanning actively")
+            else:
+                log.warning("Cannot make bleak report every advertisement in a passive scan: unchanged ones are reported once")
 
     def _kwargs(self) -> dict[str, Any]:
         if self._adapter and not HAS_AGENT:
@@ -170,6 +198,11 @@ class BleakBackend:
                 log.warning("The ble.adapter setting is only used with BlueZ on Linux, ignored here")
             return {}
         return {"adapter": self._adapter} if self._adapter else {}
+
+    def _scan_kwargs(self) -> dict[str, Any]:
+        if not self._passive:
+            return self._kwargs()
+        return {**self._kwargs(), "scanning_mode": "passive", "bluez": {"or_patterns": OR_PATTERNS}}
 
     # -- scanning -----------------------------------------------------------
 
@@ -195,8 +228,19 @@ class BleakBackend:
     async def _start_scanner(self) -> None:
         if self._scanner is not None:
             return
-        scanner = BleakScanner(detection_callback=self._detected, **self._kwargs())
-        await scanner.start()
+        scanner = BleakScanner(detection_callback=self._detected, **self._scan_kwargs())
+        try:
+            await scanner.start()
+        except BleakError as exc:
+            if not (self._passive and self._scanning == "auto" and passive_unavailable(exc)):
+                raise
+            self._passive = False
+            log.warning(
+                "BlueZ cannot scan passively, scanning actively: set Experimental = true in /etc/bluetooth/main.conf (%s)",
+                exc,
+            )
+            scanner = BleakScanner(detection_callback=self._detected, **self._scan_kwargs())
+            await scanner.start()
         self._scanner = scanner
 
     async def _stop_scanner(self) -> None:
@@ -237,7 +281,7 @@ class BleakBackend:
 
                 agent = registered_agent(int(passkey))
                 await agent.__aenter__()
-            handle = await BleakScanner.find_device_by_address(adv.address, timeout=LOOKUP_TIMEOUT_S, **self._kwargs())
+            handle = await BleakScanner.find_device_by_address(adv.address, timeout=LOOKUP_TIMEOUT_S, **self._scan_kwargs())
             if handle is None and adv.handle is not None:
                 # Not found again, e.g. a charger without Instant Readout while the Wi-Fi access point is up
                 # (its adverts are reported only with a scan response). BlueZ may still know it from the

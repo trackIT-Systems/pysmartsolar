@@ -114,7 +114,7 @@ class Daemon:
         if backend is None and config.ble.enabled:
             from smartsolar.ble.bleak_backend import BleakBackend
 
-            backend = BleakBackend(config.ble.adapter)
+            backend = BleakBackend(config.ble.adapter, config.ble.scanning)
         self.backend = backend if backend is not None else NoBackend()
         self.outputs = outputs if outputs is not None else build_outputs(config, self.hostname)
         self.keys = keys if keys is not None else KeyStore(config.keys, config.daemon.state_dir)

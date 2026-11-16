@@ -17,6 +17,7 @@ DEFAULT_SOCKET_PATH = DEFAULTS.socket  # a path, or tcp://127.0.0.1:port where t
 DEFAULT_STATE_DIR = DEFAULTS.state_dir
 DEFAULT_DATA_DIR = DEFAULTS.data_dir
 GATT_MODES = ("off", "hold", "poll")
+SCANNING_MODES = ("auto", "passive", "active")
 REGISTER_PATHS = ("auto", "serial", "gatt")
 DEFAULT_SERIAL_PORT = "/dev/ttyUSBvd*"  # the symlinks of the udev rule of tsOS (ttyUSBvd<n> for ttyUSB<n>)
 
@@ -29,6 +30,7 @@ class BleConfig:
     select_window_s: float = 10.0  # listen this long before the first device selection
     rescan_interval_s: float = 3600.0  # how often the selection is reviewed
     switch_hysteresis_db: float = 10.0
+    scanning: str = "auto"  # auto: passive where BlueZ offers it, else active; passive; active
 
 
 @dataclass(frozen=True)
@@ -238,6 +240,9 @@ def _parse_ble(raw: dict[str, Any]) -> BleConfig:
     address = _str(raw, "address", d.address, "ble")
     if address and not is_device_ident(address):
         raise ConfigError("ble.address must be a MAC address, a device UUID (macOS) or a serial number")
+    scanning = raw.get("scanning", d.scanning)
+    if scanning not in SCANNING_MODES:
+        raise ConfigError(f"ble.scanning must be one of: {', '.join(SCANNING_MODES)}")
     return BleConfig(
         enabled=_bool(raw, "enabled", d.enabled, "ble"),
         adapter=_str(raw, "adapter", d.adapter, "ble"),
@@ -245,6 +250,7 @@ def _parse_ble(raw: dict[str, Any]) -> BleConfig:
         select_window_s=_float(raw, "select_window_s", d.select_window_s, "ble", allow_zero=True),
         rescan_interval_s=_float(raw, "rescan_interval_s", d.rescan_interval_s, "ble"),
         switch_hysteresis_db=_float(raw, "switch_hysteresis_db", d.switch_hysteresis_db, "ble", allow_zero=True),
+        scanning=scanning,
     )
 
 

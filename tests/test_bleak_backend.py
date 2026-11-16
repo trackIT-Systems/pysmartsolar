@@ -28,6 +28,7 @@ def agent_module(monkeypatch):
 def bluez(monkeypatch):
     """The tests below describe the BlueZ path (pairing agent); the other systems are tested at the end."""
     monkeypatch.setattr(bb, "HAS_AGENT", True)
+    monkeypatch.setattr(bb.passive, "install", lambda: True)  # tested in test_passive.py
 
 
 def test_connect_error_mapping():
@@ -453,3 +454,121 @@ def test_a_device_the_lookup_does_not_find_again_is_connected_by_its_last_advert
         assert err.value.not_found
 
     run(go())
+# -- passive scanning ----------------------------------------------------------
+
+NO_MONITOR = BleakError("passive scanning on Linux requires BlueZ >= 5.56 with --experimental enabled and Linux kernel >= 5.10")
+
+
+def recording_scanner(monkeypatch, created, fail_passive=None):
+    """A BleakScanner that records its arguments; a passive one raises ``fail_passive`` on start."""
+
+    class FakeScanner:
+        def __init__(self, **kw):
+            self.kw = kw
+            created.append(kw)
+
+        async def start(self):
+            if fail_passive is not None and self.kw.get("scanning_mode") == "passive":
+                raise fail_passive
+
+        async def stop(self): ...
+
+    async def find(address, timeout=None, **kw):
+        created.append({"lookup": True, **kw})
+        return object()
+
+    FakeScanner.find_device_by_address = staticmethod(find)
+    monkeypatch.setattr(bb, "BleakScanner", FakeScanner)
+
+    class ConnectingClient(FakeClient):
+        def __init__(self, handle, **kw):
+            super().__init__()
+
+        async def connect(self): ...
+
+    monkeypatch.setattr(bb, "BleakClient", ConnectingClient)
+
+
+def test_scans_passively_for_victron_manufacturer_data_on_bluez(monkeypatch):
+    created = []
+    recording_scanner(monkeypatch, created)
+
+    async def go():
+        backend = bb.BleakBackend(adapter="hci0")
+        await backend.start_scan(lambda adv: None)
+        await backend.connect(SimpleNamespace(address=A), timeout_s=1.0, on_disconnect=lambda: None)
+
+    run(go())
+    # the scan, the lookup before connecting and the scan again afterwards: all passive
+    assert len(created) == 3
+    for kw in created:
+        assert kw["scanning_mode"] == "passive" and kw["adapter"] == "hci0"
+        [(start, ad_type, content)] = kw["bluez"]["or_patterns"]
+        assert (start, int(ad_type), content) == (0, 0xFF, b"\xe1\x02")
+
+
+def test_falls_back_to_active_scanning_once_if_bluez_cannot_scan_passively(monkeypatch, caplog):
+    created = []
+    recording_scanner(monkeypatch, created, fail_passive=NO_MONITOR)
+
+    async def go():
+        backend = bb.BleakBackend()
+        await backend.start_scan(lambda adv: None)
+        await backend.connect(SimpleNamespace(address=A), timeout_s=1.0, on_disconnect=lambda: None)
+
+    with caplog.at_level("WARNING"):
+        run(go())
+    assert [kw.get("scanning_mode") for kw in created] == ["passive", None, None, None]
+    assert [r.message for r in caplog.records if "passively" in r.message] == [
+        f"BlueZ cannot scan passively, scanning actively: set Experimental = true in /etc/bluetooth/main.conf ({NO_MONITOR})"
+    ]
+
+
+@pytest.mark.parametrize(
+    "scanning, error",
+    [("passive", NO_MONITOR), ("auto", BleakError("adapter 'hci1' not found"))],
+)
+def test_other_scan_errors_and_a_forced_passive_scan_do_not_fall_back(monkeypatch, scanning, error):
+    created = []
+    recording_scanner(monkeypatch, created, fail_passive=error)
+
+    async def go():
+        backend = bb.BleakBackend(scanning=scanning)
+        with pytest.raises(BleakError):
+            await backend.start_scan(lambda adv: None)
+        assert backend._scanner is None and backend._passive  # tried again passively by the scan supervisor
+
+    run(go())
+
+
+def test_active_scanning_when_configured_or_without_bluez(monkeypatch, caplog):
+    created = []
+    recording_scanner(monkeypatch, created)
+
+    async def go():
+        await bb.BleakBackend(scanning="active").start_scan(lambda adv: None)
+        monkeypatch.setattr(bb, "HAS_AGENT", False)
+        await bb.BleakBackend().start_scan(lambda adv: None)
+        with caplog.at_level("WARNING"):
+            await bb.BleakBackend(scanning="passive").start_scan(lambda adv: None)
+
+    run(go())
+    assert [kw.get("scanning_mode") for kw in created] == [None, None, None]
+    assert "ble.scanning: passive is only possible with BlueZ on Linux" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "scanning, mode, warning",
+    [
+        ("auto", None, "Cannot make bleak report every advertisement in a passive scan, scanning actively"),
+        ("passive", "passive", "Cannot make bleak report every advertisement in a passive scan: unchanged ones are reported once"),
+    ],
+)
+def test_without_the_monitor_patch_auto_scans_actively(monkeypatch, caplog, scanning, mode, warning):
+    monkeypatch.setattr(bb.passive, "install", lambda: False)
+    created = []
+    recording_scanner(monkeypatch, created)
+    with caplog.at_level("WARNING"):
+        run(bb.BleakBackend(scanning=scanning).start_scan(lambda adv: None))
+    assert [kw.get("scanning_mode") for kw in created] == [mode]
+    assert [r.message for r in caplog.records] == [warning]
