@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- **Retry delays overflowed.** After 1024 retries without success (about 8.5 h of a VE.Direct port that is not there, or of failing GATT connections), the delay calculation raised `OverflowError(34, 'Numerical result out of range')` and the daemon exited. The retry count no longer grows once the delay has reached its maximum (#4).
+
 ### Changed
 
 - **Logging.** Under systemd, records go to the journal through `python3-systemd`'s `JournalHandler` (Debian package `python3-systemd`) instead of an own implementation of the native protocol. The fields are the same, plus `LOGGER`, `THREAD_NAME`, `PROCESS_NAME`, `CODE_ARGS` and, with a traceback, `EXCEPTION_TEXT`; messages over 32 KiB are no longer cut. Without `python3-systemd` (macOS) it logs to stderr (tsOS-base#44).
