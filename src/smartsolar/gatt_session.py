@@ -112,6 +112,26 @@ class GattSession:
         self._waiters.setdefault(vreg, []).append((predicate, future))
         return future
 
+    async def _send(self, future: asyncio.Future, data: bytes) -> None:
+        """Write a request whose answer ``future`` waits for. If the write fails, nobody waits for it."""
+        try:
+            await self.link.write("0024", data)
+        except BaseException:
+            self._forget(future)
+            raise
+
+    def _forget(self, future: asyncio.Future) -> None:
+        for vreg, waiters in list(self._waiters.items()):
+            self._waiters[vreg] = [(p, f) for p, f in waiters if f is not future]
+            if not self._waiters[vreg]:
+                del self._waiters[vreg]
+        if not future.done():
+            future.cancel()
+        elif not future.cancelled():
+            # A lost link already gave it its error (on_disconnect, often during the failing write):
+            # retrieve it, or asyncio logs "Future exception was never retrieved"
+            future.exception()
+
     @staticmethod
     async def _wait(future: asyncio.Future, vreg: int, timeout_s: float) -> Any:
         try:
@@ -122,7 +142,7 @@ class GattSession:
     async def request(self, vreg: int, timeout_s: float) -> Any:
         """Read a register now (the value that arrives after the request, not a cached one)."""
         future = self._expect(vreg, lambda _: True)
-        await self.link.write("0024", get_request(vreg))
+        await self._send(future, get_request(vreg))
         return await self._wait(future, vreg, timeout_s)
 
     async def refresh(self, vregs: Iterable[int], timeout_s: float = 1.0) -> None:
@@ -142,7 +162,7 @@ class GattSession:
     async def write_register(self, vreg: int, raw: bytes, timeout_s: float) -> Any:
         """Write a register. The device answers with a value record echoing what it stored."""
         future = self._expect(vreg, lambda value: bytes(value) == raw if isinstance(value, (bytes, bytearray)) else False)
-        await self.link.write("0024", set_request(vreg, raw))
+        await self._send(future, set_request(vreg, raw))
         try:
             return await asyncio.wait_for(future, timeout_s)
         except TimeoutError:

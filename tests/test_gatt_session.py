@@ -1,4 +1,5 @@
 import asyncio
+import gc
 
 import pytest
 
@@ -221,5 +222,34 @@ def test_a_write_to_a_lost_link_raises_not_connected():
         session.on_disconnect()
         with pytest.raises(NotConnectedError):
             await task
+
+    run(go())
+
+
+@pytest.mark.parametrize(
+    "call",
+    [lambda session: session.request(0xEDBB, 1.0), lambda session: session.write_register(0xEDAB, b"\x04", 1.0)],
+    ids=["request", "write_register"],
+)
+def test_a_link_lost_during_the_write_leaves_no_unretrieved_future(call):
+    """BlueZ reports the disconnect while the request is being written: the write fails, and the
+    answer that was being waited for gets the "link lost" error that nobody awaits any more."""
+
+    async def go():
+        _, link, session, _ = await open_session(keepalive_s=0)
+        await session.start()
+        reported = []
+        asyncio.get_running_loop().set_exception_handler(lambda loop, context: reported.append(context["message"]))
+
+        async def write_while_the_link_drops(char, data):
+            session.on_disconnect()
+            raise NotConnectedError("link lost")
+
+        link.write = write_while_the_link_drops
+        with pytest.raises(NotConnectedError):
+            await call(session)
+        gc.collect()
+        await asyncio.sleep(0)
+        assert reported == [] and session._waiters == {}
 
     run(go())
