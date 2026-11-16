@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **Chargers with Instant Readout disabled are read over GATT** (#5). Such a charger advertises only its product id (`10 02 | model`). It is now selected, after any charger with Instant Readout, and read over GATT without fetching a key: in `gatt.mode`, or, while that is `off`, in the new `gatt.fallback` (default `hold`; `off` restores the old behaviour). It is recognised by its product id or its `SmartSolar` name; `smartsolar scan` shows `readout off` and `status` "Instant Readout off, GATT only". The scan watchdog leaves it alone (its adverts are mostly not reported while the access point is up), and a connect falls back to the device BlueZ knows from its last advert when the lookup does not find it again. While the 2.4 GHz access point is up, finding and connecting to it takes many attempts; a held connection then stays.
+
 ### Fixed
 
 - **Retry delays overflowed.** After 1024 retries without success (about 8.5 h of a VE.Direct port that is not there, or of failing GATT connections), the delay calculation raised `OverflowError(34, 'Numerical result out of range')` and the daemon exited. The retry count no longer grows once the delay has reached its maximum (#4).

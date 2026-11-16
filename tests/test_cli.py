@@ -478,3 +478,16 @@ def test_format_status_with_the_cable_and_without_bluetooth():
     assert lines["vedirect"] == "/dev/ttyUSBvd0 open, HQ22294ZGEU product 0xA053 firmware 1.64, hex on   last block 0s ago, 120 blocks, 2 bad checksum"
     assert lines_of(cli.format_status(status(serial={**serial, "hex": False, "state": "backoff", "last_error": "cannot open", "last_block_age_s": None}), NOW))["vedirect"].startswith("/dev/ttyUSBvd0 backoff")
     assert "vedirect" not in lines_of(cli.format_status(STATUS, NOW))
+
+
+def test_format_scan_shows_a_charger_without_instant_readout():
+    row = {"address": "AA", "name": None, "rssi": -40, "model": "0xa053", "record_type": None, "readout": False, "solar_charger": True,
+           "key": "not needed", "age_s": 0.3, "current": True}
+    text = cli.format_scan({"devices": [row]})
+    assert "readout off" in text and "not needed" in text
+
+
+def test_format_status_shows_a_charger_without_instant_readout():
+    lines = lines_of(cli.format_status(status(**{"device.readout": False, "device.key": {"source": "not needed", "state": "not needed"}}), NOW))
+    assert lines["device"].endswith("model 0xa053  Instant Readout off, GATT only")
+    assert lines["key"] == "not needed"

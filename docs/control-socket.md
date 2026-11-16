@@ -101,8 +101,10 @@ No arguments. `scan` lists the Victron devices seen in the advertisements; `resc
 
 ```json
 {"devices": [{"address": "F7:48:18:8A:77:9D", "name": "SmartSolar HQ00000TEST", "rssi": -60, "adverts": 1200, "age_s": 0.3,
-              "model": "0xa053", "record_type": 1, "solar_charger": true, "key": "config", "current": true}]}
+              "model": "0xa053", "record_type": 1, "readout": true, "solar_charger": true, "key": "config", "current": true}]}
 ```
+
+A charger with Instant Readout disabled has `"readout": false`, `"record_type": null` and `"key": "not needed"`; `status` shows it with `"readout": false` in `device`.
 
 ### `reconnect`
 

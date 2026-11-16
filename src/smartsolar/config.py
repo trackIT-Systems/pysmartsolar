@@ -40,6 +40,7 @@ class AdvertConfig:
 @dataclass(frozen=True)
 class GattConfig:
     mode: str = "off"  # off: GATT only to fetch a missing key; hold: keep the link; poll: connect now and then
+    fallback: str = "hold"  # the mode for a charger with Instant Readout disabled while mode is off (off: do not read it)
     passkey: str = "000000"
     poll_interval_s: float = 900.0
     collect_s: float = 15.0
@@ -272,14 +273,20 @@ def _parse_serial(raw: dict[str, Any]) -> SerialConfig:
     )
 
 
-def _parse_gatt(raw: dict[str, Any]) -> GattConfig:
-    d = GattConfig()
-    _check_keys(raw, {f.name for f in fields(GattConfig)}, "gatt")
-    mode = raw.get("mode", d.mode)
+def _gatt_mode(raw: dict[str, Any], key: str, default: str) -> str:
+    mode = raw.get(key, default)
     if mode is False:
         mode = "off"  # YAML reads an unquoted off as false
     if mode not in GATT_MODES:
-        raise ConfigError(f"gatt.mode must be one of: {', '.join(GATT_MODES)}")
+        raise ConfigError(f"gatt.{key} must be one of: {', '.join(GATT_MODES)}")
+    return mode
+
+
+def _parse_gatt(raw: dict[str, Any]) -> GattConfig:
+    d = GattConfig()
+    _check_keys(raw, {f.name for f in fields(GattConfig)}, "gatt")
+    mode = _gatt_mode(raw, "mode", d.mode)
+    fallback = _gatt_mode(raw, "fallback", d.fallback)
     passkey = raw.get("passkey", d.passkey)
     if isinstance(passkey, int) and not isinstance(passkey, bool):
         passkey = f"{passkey:06d}"  # YAML turns an unquoted 000000 into 0
@@ -287,6 +294,7 @@ def _parse_gatt(raw: dict[str, Any]) -> GattConfig:
         raise ConfigError("gatt.passkey must be up to 6 digits")
     return GattConfig(
         mode=mode,
+        fallback=fallback,
         passkey=passkey,
         poll_interval_s=_float(raw, "poll_interval_s", d.poll_interval_s, "gatt"),
         collect_s=_float(raw, "collect_s", d.collect_s, "gatt"),

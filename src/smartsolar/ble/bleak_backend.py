@@ -238,6 +238,11 @@ class BleakBackend:
                 agent = registered_agent(int(passkey))
                 await agent.__aenter__()
             handle = await BleakScanner.find_device_by_address(adv.address, timeout=LOOKUP_TIMEOUT_S, **self._kwargs())
+            if handle is None and adv.handle is not None:
+                # Not found again, e.g. a charger without Instant Readout while the Wi-Fi access point is up
+                # (its adverts are reported only with a scan response). BlueZ may still know it from the
+                # last advert, and keeps it for good once it is bonded: try that.
+                handle = adv.handle
             if handle is None:
                 raise ConnectError("device not found", not_found=True)
             loop = asyncio.get_running_loop()

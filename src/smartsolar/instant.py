@@ -92,6 +92,20 @@ def parse_header(data: bytes) -> Header:
     return Header(model=model, record_type=data[4], nonce=nonce, key_check=data[7])
 
 
+def parse_model(data: bytes) -> int | None:
+    """The product id of any Victron advertisement, also of the short ``10 02 | model`` one a device sends
+    with Instant Readout disabled."""
+    if len(data) < 4 or data[0] != PREFIX:
+        return None
+    model, = struct.unpack_from("<H", data, 2)
+    return model
+
+
+def is_solar_charger_model(model: int) -> bool:
+    """Victron's product ids of the MPPT solar chargers (BlueSolar and SmartSolar, also VE.Can)."""
+    return model == 0x0300 or 0xA040 <= model <= 0xA1FF
+
+
 def is_victron(manufacturer_data: dict[int, bytes]) -> bool:
     data = manufacturer_data.get(COMPANY_ID)
     return data is not None and len(data) >= HEADER_LEN and data[0] == PREFIX

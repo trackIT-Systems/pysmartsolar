@@ -38,6 +38,10 @@ class Cache:
         state.ok_at = self._clock()
         state.last_error = None
 
+    def set_stale_after(self, block: str, seconds: float | None) -> None:
+        """The source came into use or went out of use (e.g. GATT for a charger without Instant Readout)."""
+        self._stale_after[block] = seconds
+
     def fail(self, block: str, error: str) -> None:
         self.blocks[block].last_error = error
 

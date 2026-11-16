@@ -31,6 +31,10 @@ gatt:
   # Unlike on the Raspberry Pi there is no Wi-Fi/Bluetooth coexistence problem on a Mac, so hold
   # and poll are worth trying.
   mode: "off"
+  # A charger with Instant Readout disabled sends no values in its advertisements: while mode is
+  # off it is read in this mode instead (off: leave it alone). With the access point up the first
+  # connection can take many attempts.
+  fallback: "hold"
   poll_interval_s: 900
   collect_s: 15
   keepalive_s: 5

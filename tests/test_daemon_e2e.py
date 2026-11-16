@@ -13,7 +13,7 @@ from pathlib import Path
 import cbor2
 import pytest
 
-from fakes import A, B, TEST_KEY, FakeBackend, FakeClock, FakeMqtt, FakeSerialOpener, advert, free_port, run, until
+from fakes import A, B, TEST_KEY, FakeBackend, FakeClock, FakeMqtt, FakeSerialOpener, advert, free_port, product_advert, run, until
 from smartsolar import daemon as daemon_module
 from smartsolar import ipc
 from smartsolar.config import AdvertConfig, AppConfig, BleConfig, CsvConfig, DaemonConfig, GattConfig, MqttConfig, SerialConfig
@@ -521,5 +521,61 @@ def test_the_daemon_and_the_cli_work_over_loopback_tcp(capsys):
             assert result["written"][0]["ok"] and env.backend.registers[0xEDF6] == bytes.fromhex("6405")
             assert await asyncio.to_thread(cli.main, ["--socket", str(env.sock), "status"]) == 0
             assert A in capsys.readouterr().out
+
+    run(go())
+
+
+# -- a charger with Instant Readout disabled ---------------------------------------
+
+
+def test_a_charger_without_instant_readout_is_polled_over_gatt_without_a_key():
+    async def go():
+        async with Env(mode="poll", keys={}) as env:
+            env.backend.emit(product_advert(A))
+            await until(lambda: env.daemon.cache.blocks["gatt"].reading is not None)
+            assert 0xEC65 not in env.backend.get_log and not (env.state_dir / "keys.json").exists()
+            status = await env.call("status")
+            assert status["device"]["readout"] is False and status["device"]["model"] == "0xa053"
+            assert status["device"]["key"] == {"source": "not needed", "state": "not needed"}
+            assert status["gatt"]["polls"] >= 1 and status["advert"]["no_key"] == 0
+            assert any(json.loads(p)["channel_1_voltage"] == 13.31 for p in env.published("json"))
+
+    run(go())
+
+
+def test_a_charger_without_instant_readout_keeps_its_held_link_and_the_scan_is_left_alone(monkeypatch):
+    async def go():
+        monkeypatch.setattr(daemon_module, "SCAN_WATCHDOG_S", 0.2)
+        async with Env(mode="hold", keys={}) as env:
+            env.backend.emit(product_advert(A))
+            await until(lambda: env.daemon.gatt.session is not None and env.daemon.cache.blocks["gatt"].reading is not None)
+            await asyncio.sleep(0.8)  # no adverts: with the access point up BlueZ mostly reports none
+            assert env.backend.scan_starts == 1 and len(env.backend.links) == 1 and env.daemon.gatt.session is not None
+
+    run(go())
+
+
+def test_in_mode_off_a_charger_without_instant_readout_is_held_over_gatt_by_default():
+    async def go():
+        async with Env(keys={}) as env:
+            env.backend.emit(product_advert(A))
+            await until(lambda: env.daemon.gatt.session is not None and env.daemon.cache.blocks["gatt"].reading is not None)
+            status = await env.call("status")
+            assert status["gatt"]["mode"] == "hold" and status["blocks"]["gatt"]["enabled"] and len(env.backend.links) == 1
+            assert 0xEC65 not in env.backend.get_log
+            started = [json.loads(p) for t, p, _ in env.mqtt.published if t == "tracker/smartsolar/events/json"][0]
+            assert "gatt_fallback=hold" in started["detail"]
+
+    run(go())
+
+
+def test_with_the_fallback_off_a_charger_without_instant_readout_is_listed_but_not_selected():
+    async def go():
+        async with Env(keys={}, fallback="off") as env:
+            env.backend.emit(product_advert(A))
+            await asyncio.sleep(1.5)  # the selection runs once a second
+            assert env.daemon.tracker.current_address is None and not env.backend.links
+            scan = await env.call("scan")
+            assert scan["devices"][0]["readout"] is False and scan["devices"][0]["current"] is False
 
     run(go())

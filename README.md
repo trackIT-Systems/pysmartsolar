@@ -12,6 +12,7 @@ A GATT connection to a SmartSolar is unusable while the Raspberry Pi's 2.4 GHz W
 
 * The advertisements are always the main data source. No connection, no pairing.
 * GATT is optional (`gatt.mode`) for the values that are not in the advertisements (firmware, uptime, load output, ...), and it fetches the Instant Readout key once if you did not configure it.
+* A charger with Instant Readout disabled can only be read over GATT. While `gatt.mode` is `off`, the daemon reads it in `gatt.fallback` (default `hold`; `off` leaves it alone). With the access point up this takes many attempts: even its advertisements are mostly not reported then (see [docs/quirks.md](docs/quirks.md)). Once a `hold` connection is up, it stays.
 
 The measurements behind this, and everything else that was found out about the device, are in [docs/](docs/README.md), starting with [docs/quirks.md](docs/quirks.md).
 
@@ -54,14 +55,14 @@ The key and the passkey are never logged and never published.
 
 `smartsolard [--config FILE]`, default config `/etc/smartsolar/smartsolar.yml`, see [config/smartsolar.yml](config/smartsolar.yml).
 
-* **Device:** the configured `ble.address`, otherwise the strongest SmartSolar (solar charger records of other Victron devices are listed but never selected). The selection is reviewed every `ble.rescan_interval_s`; another device must be `ble.switch_hysteresis_db` stronger to replace the current one.
+* **Device:** the configured `ble.address`, otherwise the strongest SmartSolar (solar charger records of other Victron devices are listed but never selected). A charger with Instant Readout disabled only sends its product id; it is recognised by that id (or its `SmartSolar` name) and selected unless both `gatt.mode` and `gatt.fallback` are `off` (or when it is pinned), but a charger with Instant Readout comes first. The selection is reviewed every `ble.rescan_interval_s`; another device must be `ble.switch_hysteresis_db` stronger to replace the current one.
 * **Advertisements:** decoded as they arrive; the latest reading is published every `advert.publish_interval_s` (the device sends a new one about once a second). Fields: state, charger error, battery voltage and current, yield today, PV power, load current; values the device reports as not available are `null`.
 * **GATT** (`gatt.mode`):
-  * `off`: no connection, except to fetch a missing key.
+  * `off`: no connection, except to fetch a missing key. A charger with Instant Readout disabled is read in `gatt.fallback` (default `hold`) instead.
   * `hold`: keep a connection and publish the values the device pushes every `gatt.publish_interval_s`. A ping every `gatt.keepalive_s` keeps it open (the device closes the link 10 s after the last ping).
   * `poll`: connect every `gatt.poll_interval_s`, collect the values, publish, disconnect.
 
-  The device keeps advertising while a GATT connection is open, so the advertisement data stays fresh in `hold` and `poll`.
+  The device keeps advertising while a GATT connection is open, so the advertisement data stays fresh in `hold` and `poll`. A charger with Instant Readout disabled may stop advertising while connected, and its adverts are mostly not reported while the access point is up; for it the scan watchdog is off, and a connect falls back to the device BlueZ knows from its last advert (for good once bonded) when the lookup does not find it again.
 
   While a connection is being opened the advertisement scan is paused (BlueZ rejects connects while the same client scans), so with an access point up on 2.4 GHz the connection attempts of `hold` and `poll` cost advertisement readings (in a test, no reading for the first minute while the first attempts timed out). Failed attempts are retried with a jittered, growing delay, and nothing here touches Wi-Fi. Use `gatt.mode: off` there.
 * **MQTT:** every reading as CSV, JSON and CBOR on `{host}/smartsolar/{serial}/csv|json|cbor`, with the same columns whichever source it came from: `device`, then the values under their names (`battery_voltage`, `pv_power`, `yield_today`, ...). No time and nothing retained: the receiver stamps a reading on arrival. CBOR is a list in column order, about 145 bytes per reading, for cellular links. At most one reading per device every `mqtt.publish_interval_s` (300 s), the best source's newest. Events on `{host}/smartsolar/events/...`.

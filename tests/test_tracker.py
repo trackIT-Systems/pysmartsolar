@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fakes import A, B, OTHER_KEY, TEST_KEY, WRONG_CHECK_KEY, advert
+from fakes import A, B, OTHER_KEY, TEST_KEY, WRONG_CHECK_KEY, advert, product_advert
 from smartsolar.config import AdvertConfig, BleConfig
 from smartsolar.keys import KeyStore
 from smartsolar.state import AdvertStats, Cache
@@ -15,7 +15,7 @@ class Clock:
         return self.now
 
 
-def make(tmp_path, *, keys=None, ble=None, clock=None):
+def make(tmp_path, *, keys=None, ble=None, clock=None, gatt_fallback=False):
     clock = clock or Clock()
     events, switched, selected = [], [], []
     cache = Cache({"advert": 120.0, "gatt": None}, clock=clock)
@@ -28,6 +28,7 @@ def make(tmp_path, *, keys=None, ble=None, clock=None):
         AdvertStats(started=datetime.now().astimezone()),
         on_switch=lambda: switched.append(1),
         on_select=lambda: selected.append(1),
+        gatt_fallback=gatt_fallback,
         clock=clock,
     )
     return tracker, cache, events, switched, selected, clock
@@ -264,3 +265,63 @@ def test_a_pin_can_be_a_serial_number_or_a_macos_uuid(tmp_path):
         feed(tracker, clock, uuid, -85, name="SmartSolar HQ11111MAC")
         tracker.review()
         assert tracker.current_address == wanted
+
+
+# -- chargers with Instant Readout disabled ----------------------------------------
+
+
+def test_a_charger_without_instant_readout_is_not_selected_without_gatt(tmp_path):
+    tracker, _, _, _, _, clock = make(tmp_path, ble=BleConfig(select_window_s=0))
+    tracker.on_advert(product_advert(A, rssi=-40))
+    tracker.review()
+    assert tracker.current_address is None
+    row = tracker.scan_table()[0]
+    assert row["readout"] is False and row["solar_charger"] is True and row["model"] == "0xa053" and row["key"] == "not needed"
+
+
+def test_a_charger_without_instant_readout_is_selected_for_gatt_and_never_decoded(tmp_path):
+    tracker, cache, events, _, selected, clock = make(tmp_path, keys={}, ble=BleConfig(select_window_s=0), gatt_fallback=True)
+    tracker.on_advert(product_advert(A, rssi=-40))
+    tracker.review()
+    assert tracker.current_address == A and selected == [1] and tracker.readout_off(A)
+    assert events[0].kind == "device_selected" and events[0].data["readout"] is False and events[0].data["key"] == "not needed"
+    tracker.on_advert(product_advert(A, rssi=-40))
+    assert tracker.stats.seen == 1 and tracker.stats.no_key == 0 and tracker.stats.undecodable == 0
+    assert cache.blocks["advert"].reading is None
+
+
+def test_a_pinned_charger_without_instant_readout_is_selected_and_the_missing_gatt_mode_is_told(tmp_path, caplog):
+    tracker, _, _, _, _, clock = make(tmp_path, ble=BleConfig(address=A, select_window_s=0))
+    tracker.on_advert(product_advert(A, rssi=-40))
+    tracker.review()
+    assert tracker.current_address == A
+    assert any("set gatt.fallback to hold or poll" in r.getMessage() and r.levelname == "WARNING" for r in caplog.records)
+
+
+def test_instant_readout_is_preferred_over_a_stronger_charger_without_it(tmp_path):
+    tracker, _, _, _, _, clock = make(tmp_path, ble=BleConfig(select_window_s=0), gatt_fallback=True)
+    tracker.on_advert(product_advert(B, rssi=-30))
+    feed(tracker, clock, A, -80)
+    tracker.review()
+    assert tracker.current_address == A
+
+
+def test_a_charger_with_instant_readout_replaces_one_without_it_whatever_the_signal(tmp_path):
+    tracker, _, _, switched, _, clock = make(tmp_path, ble=BleConfig(select_window_s=0, rescan_interval_s=100), gatt_fallback=True)
+    tracker.on_advert(product_advert(B, rssi=-30))
+    tracker.review()
+    assert tracker.current_address == B
+    feed(tracker, clock, A, -80, seconds=101)
+    tracker.on_advert(product_advert(B, rssi=-30))
+    tracker.review()
+    assert tracker.current_address == A and switched == [1]
+
+
+def test_without_instant_readout_the_model_or_the_name_must_say_solar_charger(tmp_path):
+    tracker, _, _, _, _, clock = make(tmp_path, ble=BleConfig(select_window_s=0), gatt_fallback=True)
+    tracker.on_advert(product_advert(A, rssi=-40, model=0xA389, name="SmartShunt HQ00000SHNT"))  # a battery monitor
+    tracker.review()
+    assert tracker.current_address is None
+    tracker.on_advert(product_advert(B, rssi=-60, model=0xFFFF, name="SmartSolar HQ00000TEST"))  # a model id not in the table
+    tracker.review()
+    assert tracker.current_address == B

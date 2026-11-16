@@ -8,6 +8,9 @@
   device pushes.
 * ``poll``: connects every ``poll_interval_s``, collects the values, publishes them and disconnects.
 
+With ``mode`` off, a selected charger whose Instant Readout is disabled is read in ``gatt.fallback``
+(default ``hold``): GATT is the only way to read it.
+
 While the Wi-Fi access point is up on 2.4 GHz, opening a connection mostly fails (see docs/quirks.md),
 so failed attempts are retried with a jittered, growing delay. Nothing here touches Wi-Fi.
 """
@@ -77,6 +80,7 @@ class GattManager:
         stats: GattStats,
         *,
         on_state: Callable[[GattState], None] | None = None,
+        readout_off: Callable[[str], bool] = lambda address: False,
         rng: Callable[[], float] = random.random,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -88,6 +92,7 @@ class GattManager:
         self._emit_event = emit_event
         self._emit_reading = emit_reading
         self._on_state = on_state
+        self._readout_off = readout_off
         self._clock = clock
         self.stats = stats
         self._backoff = Backoff(cfg.backoff_initial_s, cfg.backoff_max_s, rng=rng)
@@ -116,12 +121,20 @@ class GattManager:
         self._failures = Failures(log)
         self._connected_before = False
 
+    @property
+    def mode(self) -> str:
+        """``gatt.mode``, or ``gatt.fallback`` while it is off and the selected device has Instant Readout disabled."""
+        if self.cfg.mode != "off":
+            return self.cfg.mode
+        adv = self._device()
+        return self.cfg.fallback if adv is not None and self._readout_off(adv.address) else "off"
+
     # -- requests from the outside ------------------------------------------
 
     def request_poll(self) -> asyncio.Future:
         """Poll mode: connect now and collect. The future resolves with the Reading."""
-        if self.cfg.mode != "poll":
-            raise NoDataError(f"gatt.mode is {self.cfg.mode}, a poll needs mode poll")
+        if self.mode != "poll":
+            raise NoDataError(f"gatt.mode is {self.mode}, a poll needs mode poll")
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._poll_futures.append(future)
         self._poll_now = True
@@ -221,12 +234,12 @@ class GattManager:
     def _has_work(self, adv: Advertisement) -> bool:
         if self._needs_key(adv) or self._write_requests or self._read_requests:
             return True
-        if self.cfg.mode == "hold":
+        if self.mode == "hold":
             return True
-        return self.cfg.mode == "poll" and (self._poll_now or self._clock() >= self._next_poll)
+        return self.mode == "poll" and (self._poll_now or self._clock() >= self._next_poll)
 
     def _idle_wait(self) -> float:
-        if self.cfg.mode == "poll":
+        if self.mode == "poll":
             return max(0.5, self._next_poll - self._clock())
         return 30.0
 
@@ -238,7 +251,7 @@ class GattManager:
             await self._failed(adv, failure)
         elif self.stats.connects > connects:
             # A held connection ends rarely (reconnect, another device); a poll or key fetch every time
-            log.log(logging.INFO if self.cfg.mode == "hold" else logging.DEBUG, "Disconnected from %s", adv.address)
+            log.log(logging.INFO if self.mode == "hold" else logging.DEBUG, "Disconnected from %s", adv.address)
 
     async def _connect_and_work(self, adv: Advertisement) -> BaseException | None:
         """Returns the error if the attempt failed. The link is closed before this returns."""
@@ -287,19 +300,19 @@ class GattManager:
             self._set_state(GattState.CONNECTED)
             # A held connection is a one-off event; polls connect periodically, so only the first one is told.
             # While a failure is logged, connecting is no recovery yet: that is the first data (`_works`).
-            first = not self._connected_before or self.cfg.mode == "hold"
+            first = not self._connected_before or self.mode == "hold"
             if self._failures.failing("connect"):
                 first = False
             log.log(logging.INFO if first else logging.DEBUG, "Connected to %s over GATT", adv.address)
             self._connected_before = True
-            self._event("connected", adv.address, rssi=round(adv.rssi), mode=self.cfg.mode)
+            self._event("connected", adv.address, rssi=round(adv.rssi), mode=self.mode)
             try:
                 await self._work(adv, session)
             except _Stopping:
                 raise
             except (SmartsolarError, TimeoutError) as exc:
                 return exc
-            if self._clock() - up_since >= STABLE_AFTER_S or self.cfg.mode != "hold":
+            if self._clock() - up_since >= STABLE_AFTER_S or self.mode != "hold":
                 self._backoff.reset()
                 self.stats.backoff_s = None
             return None
@@ -328,9 +341,9 @@ class GattManager:
             self._key_futures = []
         await self._do_reads(session)
         await self._do_writes(adv, session)
-        if self.cfg.mode == "poll":
+        if self.mode == "poll":
             await self._collect(adv, session)
-        elif self.cfg.mode == "hold":
+        elif self.mode == "hold":
             await self._hold(adv, session)
         else:
             self._works(adv)

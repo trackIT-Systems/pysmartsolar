@@ -12,7 +12,7 @@ from smartsolar.vreg import VREG_KEY, build_write
 
 
 class Rig:
-    def __init__(self, mode, *, have_key=True, backend=None, device=A, **cfg):
+    def __init__(self, mode, *, have_key=True, backend=None, device=A, readout_off=(), **cfg):
         self.backend = backend or FakeBackend()
         self.events, self.readings, self.keys = [], [], ({A: TEST_KEY, B: TEST_KEY} if have_key else {})
         self.current = {"adv": advert(device) if device else None}
@@ -22,7 +22,7 @@ class Rig:
         self.stats = GattStats()
         self.mgr = GattManager(
             self.cfg, self.backend, lambda: self.current["adv"], lambda a: a in self.keys, self.keys.__setitem__,
-            self.events.append, self.readings.append, self.stats, rng=lambda: 1.0,
+            self.events.append, self.readings.append, self.stats, readout_off=lambda a: a in readout_off, rng=lambda: 1.0,
         )
         self.task = None
 
@@ -438,5 +438,20 @@ def test_request_read_skips_registers_the_device_does_not_have():
             with pytest.raises(Exception, match="none of the registers"):
                 await asyncio.wait_for(rig.mgr.request_read([0xBEEF]), 3.0)
             assert rig.mgr.state is GattState.CONNECTED
+
+    run(go())
+
+def test_mode_off_holds_a_device_without_instant_readout_in_the_fallback_mode():
+    async def go():
+        async with Rig("off", readout_off={A}) as rig:
+            assert rig.mgr.mode == "hold"
+            await until(lambda: rig.mgr.state == GattState.CONNECTED and rig.readings)
+            assert len(rig.backend.links) == 1
+        rig = Rig("off", readout_off={A}, fallback="off")
+        assert rig.mgr.mode == "off"
+        rig = Rig("off", readout_off={B})  # the selected device A has Instant Readout
+        assert rig.mgr.mode == "off"
+        rig = Rig("poll", readout_off={A})  # a configured mode wins
+        assert rig.mgr.mode == "poll"
 
     run(go())

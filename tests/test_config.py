@@ -79,6 +79,14 @@ def test_an_unquoted_off_is_off():
         parse_config({"gatt": {"mode": True}})
 
 
+def test_the_gatt_fallback_is_hold_by_default_and_can_be_switched_off():
+    assert parse_config({}).gatt.fallback == "hold"
+    assert parse_config({"gatt": {"fallback": False}}).gatt.fallback == "off"  # an unquoted off
+    assert parse_config({"gatt": {"fallback": "poll"}}).gatt.fallback == "poll"
+    with pytest.raises(ConfigError, match="gatt.fallback"):
+        parse_config({"gatt": {"fallback": "always"}})
+
+
 def test_load_config(tmp_path):
     path = tmp_path / "c.yml"
     path.write_text("gatt:\n  mode: hold\n  passkey: 000000\n")

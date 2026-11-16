@@ -8,6 +8,7 @@ On the Raspberry Pi 3 and 5 Wi-Fi and Bluetooth share one chip. With the 2.4 GHz
 
 * **GATT links are unusable.** Links are set up and then lost within a second: 0 usable links in 26 attempts; with the access point down 10 of 10 connected in half a second.
 * **Advertisements are fine.** A passive scan keeps receiving them (gaps up to 22 s). This is the main reason for using Instant Readout.
+* **Adverts that wait for a scan response are lost.** A charger with Instant Readout disabled sends connectable `ADV_IND` adverts. During an active scan the kernel reports such an advert only together with its scan response, and drops repeats from the same address. With the access point up the charger sent no scan responses at all, so BlueZ never reported it (measured: 0 scan responses and 0 reports in 40 s; with the access point down about 100 scan responses per 10 s and 201 reports). Instant Readout adverts are not affected. The daemon selects such a charger whenever one advert gets through, keeps it, and connects by BlueZ's last known device when the lookup fails. Bonding makes BlueZ keep it for good.
 * The daemon never touches Wi-Fi. GATT work (key fetch, `hold`, `poll`, settings over Bluetooth) simply retries with backoff. For provisioning use the VE.Direct cable, which is unaffected.
 
 ## BlueZ

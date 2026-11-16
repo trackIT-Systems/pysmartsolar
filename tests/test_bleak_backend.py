@@ -415,3 +415,41 @@ def test_without_an_agent_no_agent_is_used_to_connect(monkeypatch):
         assert backend._kwargs() == {}  # an adapter name means nothing outside BlueZ
 
     run(go())
+
+
+def test_a_device_the_lookup_does_not_find_again_is_connected_by_its_last_advert(monkeypatch):
+    async def go():
+        handles = []
+        backend = bb.BleakBackend()
+
+        class FakeScanner:
+            def __init__(self, **kw): ...
+
+            async def start(self): ...
+
+            async def stop(self): ...
+
+        async def find(address, timeout=None, **kw):
+            return None  # e.g. no scan responses while the Wi-Fi access point is up
+
+        FakeScanner.find_device_by_address = staticmethod(find)
+
+        class FakeBleakClient(FakeClient):
+            def __init__(self, handle, **kw):
+                super().__init__()
+                handles.append(handle)
+
+            async def connect(self): ...
+
+        monkeypatch.setattr(bb, "BleakScanner", FakeScanner)
+        monkeypatch.setattr(bb, "BleakClient", FakeBleakClient)
+        from fakes import advert, product_advert
+
+        known = object()
+        link = await backend.connect(product_advert(handle=known), timeout_s=1.0, on_disconnect=lambda: None)
+        assert handles == [known] and isinstance(link, bb.BleakLink)
+        with pytest.raises(ConnectError) as err:
+            await backend.connect(advert(), timeout_s=1.0, on_disconnect=lambda: None)  # no handle to fall back to
+        assert err.value.not_found
+
+    run(go())

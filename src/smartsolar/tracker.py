@@ -4,6 +4,10 @@ Every advertisement of a Victron device updates the signal strength of that devi
 selected device (the pinned address, or the strongest solar charger) is decoded with its
 key, and the result goes into the cache. The selection is reviewed at a long interval, and
 a device only replaces the current one if it is clearly stronger (hysteresis).
+
+A charger with Instant Readout disabled advertises only its product id. It is selected when GATT
+can read it (``gatt.mode`` poll or hold, or ``gatt.fallback``, by default hold) or when it is pinned,
+after any charger with Instant Readout.
 """
 
 from __future__ import annotations
@@ -55,6 +59,26 @@ class Seen:
     count: int
     adv: Advertisement
     header: instant.Header | None
+    model: int | None = None
+
+    @property
+    def readout(self) -> bool:
+        """Sends Instant Readout records (else only its product id: Instant Readout is disabled)."""
+        return self.header is not None
+
+    @property
+    def solar_charger(self) -> bool:
+        if self.header is not None:
+            return self.header.record_type == instant.RECORD_SOLAR_CHARGER
+        # Without Instant Readout there is no record type. The name comes from the scan response,
+        # which often does not get through while the Wi-Fi access point is up, so the model counts first.
+        model_says = self.model is not None and instant.is_solar_charger_model(self.model)
+        return model_says or (self.name or "").startswith("SmartSolar")
+
+
+def _rank(seen: Seen) -> tuple[bool, float]:
+    """A device with Instant Readout first (it delivers without a connection), then the strongest."""
+    return (seen.readout, seen.rssi)
 
 
 def advert_values(values: dict[str, Any]) -> tuple[Value, ...]:
@@ -73,9 +97,11 @@ class DeviceTracker:
         *,
         on_switch: Callable[[], None] | None = None,
         on_select: Callable[[], None] | None = None,
+        gatt_fallback: bool = False,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.ble = ble
+        self.gatt_fallback = gatt_fallback  # GATT can read a charger without Instant Readout (gatt.mode or gatt.fallback): select it
         self.advert = advert
         self.keys = keys
         self.cache = cache
@@ -104,9 +130,10 @@ class DeviceTracker:
             header: instant.Header | None = instant.parse_header(adv.data)
         except AdvertError:
             header = None
+        model = instant.parse_model(adv.data)
         s = self.seen.get(adv.address)
         if s is None:
-            self.seen[adv.address] = Seen(adv.address, adv.name, adv.rssi, now, now, 1, adv, header)
+            self.seen[adv.address] = Seen(adv.address, adv.name, adv.rssi, now, now, 1, adv, header, model)
         else:
             s.rssi += RSSI_ALPHA * (adv.rssi - s.rssi)
             s.name = adv.name or s.name
@@ -114,13 +141,20 @@ class DeviceTracker:
             s.count += 1
             s.adv = adv
             s.header = header
+            s.model = model
         if adv.address == self.current_address:
             self.current = adv
             self.current_header = header
             self.last_advert_mono = now
             self.stats.seen += 1
             self._times.append(now)
-            self._decode(adv)
+            if header is not None:  # without Instant Readout there is nothing to decode, GATT reads it
+                self._decode(adv)
+
+    def readout_off(self, address: str | None) -> bool:
+        """The device is known to send no Instant Readout records: it is read over GATT only, without a key."""
+        s = self.seen.get(address or "")
+        return s is not None and not s.readout
 
     def rate_per_min(self) -> float:
         now = self._clock()
@@ -168,15 +202,16 @@ class DeviceTracker:
     def eligible(self) -> list[Seen]:
         """Solar chargers seen recently (other Victron devices are listed by ``scan`` but never selected).
 
-        With a serial number known from the cable, the device that carries it in its name is the
-        only candidate as long as it is in range; otherwise the others stay candidates.
+        A charger with Instant Readout disabled is only a candidate if GATT can read it (``gatt_fallback``)
+        or it is pinned. With a serial number known from the cable, the device that carries it in its
+        name is the only candidate as long as it is in range; otherwise the others stay candidates.
         """
         now = self._clock()
         found = [
             s
             for s in self.seen.values()
-            if s.header is not None
-            and s.header.record_type == instant.RECORD_SOLAR_CHARGER
+            if s.solar_charger
+            and (s.readout or self.gatt_fallback or self._is_pinned(s))
             and now - s.last_seen <= ELIGIBLE_MAX_AGE_S
             and (self.ble.address is None or self._is_pinned(s))
         ]
@@ -217,7 +252,7 @@ class DeviceTracker:
                 return
             if self.ble.address is None and now - self._started < self.ble.select_window_s:
                 return
-            self._select(max(candidates, key=lambda s: s.rssi), "initial")
+            self._select(max(candidates, key=_rank), "initial")
             return
         if self.ble.address is not None or now < self._next_review:
             return
@@ -230,7 +265,7 @@ class DeviceTracker:
         if not candidates:
             return
         if self.current_address is None:
-            self._select(max(candidates, key=lambda s: s.rssi), "rescan")
+            self._select(max(candidates, key=_rank), "rescan")
         else:
             self._consider_switch(candidates, 0.0)
         self._next_review = self._clock() + self.ble.rescan_interval_s
@@ -239,10 +274,11 @@ class DeviceTracker:
         if not candidates:
             return
         current = self.seen.get(self.current_address or "")
-        best = max(candidates, key=lambda s: s.rssi)
+        best = max(candidates, key=_rank)
         if best.address == self.current_address:
             return
-        if current is not None and best.rssi < current.rssi + hysteresis_db:
+        upgrade = current is not None and best.readout and not current.readout  # Instant Readout wins whatever the signal
+        if current is not None and not upgrade and best.rssi < current.rssi + hysteresis_db:
             return
         old = self.current_address
         self._select(best, "switch", previous=old, rssi_from=None if current is None else round(current.rssi))
@@ -257,8 +293,12 @@ class DeviceTracker:
         self._times.clear()
         self.last_advert_mono = self._clock()
         self._next_review = self._clock() + self.ble.rescan_interval_s
-        _, source = self.keys.get(seen.address, seen.name)
+        source = self._key_source(seen)
         kind = "device_switched" if reason in ("switch", "serial") else "device_selected"
+        if not seen.readout:
+            extra["readout"] = False
+            if not self.gatt_fallback:  # pinned: selected, but nothing reads it
+                log.warning("Instant Readout is disabled on %s: set gatt.fallback to hold or poll to read it over GATT", seen.address)
         self._event(kind, seen.address, rssi=round(seen.rssi), name=seen.name, key=source, reason=reason, **extra)
         if self._on_select is not None:
             self._on_select()
@@ -267,7 +307,6 @@ class DeviceTracker:
         now = self._clock()
         rows = []
         for s in sorted(self.seen.values(), key=lambda s: s.rssi, reverse=True):
-            _, source = self.keys.get(s.address, s.name)
             rows.append(
                 {
                     "address": s.address,
@@ -275,14 +314,21 @@ class DeviceTracker:
                     "rssi": round(s.rssi),
                     "adverts": s.count,
                     "age_s": round(now - s.last_seen, 1),
-                    "model": f"0x{s.header.model:04x}" if s.header else None,
+                    "model": f"0x{s.model:04x}" if s.model is not None else None,
                     "record_type": s.header.record_type if s.header else None,
-                    "solar_charger": bool(s.header and s.header.record_type == instant.RECORD_SOLAR_CHARGER),
-                    "key": source,
+                    "readout": s.readout,
+                    "solar_charger": s.solar_charger,
+                    "key": self._key_source(s),
                     "current": s.address == self.current_address,
                 }
             )
         return rows
+
+    def _key_source(self, seen: Seen) -> str:
+        if not seen.readout:
+            return "not needed"
+        _, source = self.keys.get(seen.address, seen.name)
+        return source
 
     def _event(self, kind: str, device: str | None, **data: Any) -> None:
         try:

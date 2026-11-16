@@ -119,12 +119,11 @@ class Daemon:
         self.outputs = outputs if outputs is not None else build_outputs(config, self.hostname)
         self.keys = keys if keys is not None else KeyStore(config.keys, config.daemon.state_dir)
         gatt = config.gatt
-        gatt_stale = {"off": None, "hold": 3 * gatt.publish_interval_s, "poll": 3 * gatt.poll_interval_s}[gatt.mode]
         ble_on = config.ble.enabled
         self.cache = Cache(
             {
                 "advert": config.advert.stale_after_s if ble_on else None,
-                "gatt": gatt_stale if ble_on else None,
+                "gatt": self._gatt_stale_after(gatt.mode) if ble_on else None,
                 "vedirect": config.serial.stale_after_s if config.serial.enabled else None,
             }
         )
@@ -140,16 +139,19 @@ class Daemon:
             self.advert_stats,
             on_switch=self._on_switch,
             on_select=self._on_select,
+            gatt_fallback=gatt.mode != "off" or gatt.fallback != "off",
         )
         self.gatt = GattManager(
             gatt,
             backend,
             lambda: self.tracker.current,
-            lambda address: self.keys.get(address, self._name(address))[0] is not None,
+            # without Instant Readout there is nothing to decrypt: GATT reads the values, not the key
+            lambda address: self.tracker.readout_off(address) or self.keys.get(address, self._name(address))[0] is not None,
             lambda address, key: self.keys.store(address, key, self._name(address)),
             self._on_event,
             self._on_gatt_reading,
             self.gatt_stats,
+            readout_off=self.tracker.readout_off,
         )
         self.serial_stats = SerialStats()
         self.serial: SerialManager | None = None
@@ -193,7 +195,13 @@ class Daemon:
         if event.kind == "key_rejected":
             self.gatt.poke()
 
+    def _gatt_stale_after(self, mode: str) -> float | None:
+        gatt = self.config.gatt
+        return {"off": None, "hold": 3 * gatt.publish_interval_s, "poll": 3 * gatt.poll_interval_s}[mode]
+
     def _on_select(self) -> None:
+        if self.config.ble.enabled:  # the device decides whether gatt.fallback applies
+            self.cache.set_stale_after("gatt", self._gatt_stale_after(self.gatt.mode))
         self.gatt.poke()
 
     def _on_switch(self) -> None:
@@ -215,7 +223,8 @@ class Daemon:
                 datetime.now().astimezone(),
                 "daemon_started",
                 None,
-                {"version": __version__, "ble": self.config.ble.enabled, "gatt_mode": self.config.gatt.mode, "serial": self.serial is not None},
+                {"version": __version__, "ble": self.config.ble.enabled, "gatt_mode": self.config.gatt.mode, "gatt_fallback": self.config.gatt.fallback,
+                 "serial": self.serial is not None},
             )
         )
         await self.server.start()
@@ -296,7 +305,10 @@ class Daemon:
                 if restarted_at is not None and last is not None and last > restarted_at:
                     self._failures.succeeded("scan watchdog", "Advertisements from %s arrive again", self.tracker.current_address)
                     restarted_at = None
-                if self.tracker.current_address is not None and last is not None and time.monotonic() - last > SCAN_WATCHDOG_S:
+                # Not for a charger without Instant Readout: its adverts may stop while GATT is connected, and
+                # with the Wi-Fi access point up BlueZ mostly does not report them (no scan responses).
+                quiet_by_design = self.tracker.readout_off(self.tracker.current_address)
+                if self.tracker.current_address is not None and last is not None and not quiet_by_design and time.monotonic() - last > SCAN_WATCHDOG_S:
                     self._failures.failed(
                         "scan watchdog",
                         self.tracker.current_address,
@@ -349,6 +361,8 @@ class Daemon:
         address = self.tracker.current_address
         if address is None:
             return "unknown"
+        if self.tracker.readout_off(address):
+            return "not needed"
         key, _ = self.keys.get(address, self._name(address))
         if key is None:
             return "missing"
@@ -362,11 +376,14 @@ class Daemon:
         device = None
         if current is not None:
             _, source = self.keys.get(current.address, current.name)
+            if tracker.readout_off(current.address):
+                source = "not needed"
             device = {
                 "address": current.address,
                 "name": current.name,
                 "rssi": None if seen is None else round(seen.rssi),
-                "model": f"0x{tracker.current_header.model:04x}" if tracker.current_header else None,
+                "model": f"0x{seen.model:04x}" if seen is not None and seen.model is not None else None,
+                "readout": seen is None or seen.readout,
                 "pinned": self.config.ble.address is not None,
                 "key": {"source": source, "state": self._key_status()},
                 "last_advert_age_s": None if tracker.last_advert_mono is None else round(now - tracker.last_advert_mono, 1),
@@ -374,7 +391,7 @@ class Daemon:
             }
         stats, gstats = self.advert_stats, self.gatt_stats
         gatt_info: dict[str, Any] = {
-            "mode": self.config.gatt.mode,
+            "mode": gatt.mode,
             "state": gatt.state.value,
             "connected": gatt.session is not None,
             "connected_since": utc_iso(gatt.connected_since) if gatt.connected_since else None,
@@ -437,7 +454,7 @@ class Daemon:
             if reading is None or self.cache.is_stale("advert"):
                 raise NoDataError(f"no advertisement decoded in the last {self.config.advert.stale_after_s:g} s (key known? device in range?)")
             return reading
-        mode = self.config.gatt.mode
+        mode = self.gatt.mode
         if mode == "off":
             raise NoDataError("gatt.mode is off")
         if mode == "hold":
@@ -470,7 +487,7 @@ class Daemon:
 
     async def _cmd_reconnect(self, args: dict[str, Any]) -> dict[str, Any]:
         self._need_ble()
-        if self.config.gatt.mode == "off":
+        if self.gatt.mode == "off":
             raise NoDataError("gatt.mode is off, there is no connection to renew")
         self.gatt.request_reconnect()
         return {"requested": True}

@@ -23,6 +23,10 @@ gatt:
   #       connection: with the 2.4 GHz access point up, opening one mostly fails)
   # poll: connect every poll_interval_s, collect the values, disconnect
   mode: "off"
+  # A charger with Instant Readout disabled sends no values in its advertisements: while mode is
+  # off it is read in this mode instead (off: leave it alone). With the access point up the first
+  # connection can take many attempts.
+  fallback: "hold"
   passkey: "000000"              # the pairing passkey of the device (Victron default)
   poll_interval_s: 900
   collect_s: 15

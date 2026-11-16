@@ -97,11 +97,13 @@ def format_status(status: dict[str, Any], now: datetime | None = None) -> str:
             parts.append(f"rssi {device['rssi']} dBm")
         if device.get("model"):
             parts.append(f"model {device['model']}")
+        if device.get("readout") is False:
+            parts.append("Instant Readout off, GATT only")
         if device.get("pinned"):
             parts.append("pinned")
         lines.append(("device", "  ".join(parts)))
         key = device["key"]
-        lines.append(("key", f"{key['source']}, {key['state']}"))
+        lines.append(("key", key["source"] if key["source"] == "not needed" else f"{key['source']}, {key['state']}"))
         advert = status["blocks"]["advert"]
         text = "no data yet" if advert["age_s"] is None else f"{'stale' if advert['stale'] else 'ok'} {fmt_duration(advert['age_s'])} ago"
         a = status["advert"]
@@ -184,7 +186,7 @@ def format_scan(scan: dict[str, Any]) -> str:
             d.get("name") or "",
             f"{d['rssi']} dBm",
             d["model"] or "-",
-            "solar charger" if d["solar_charger"] else f"type {d['record_type']}",
+            "readout off" if d.get("readout") is False else ("solar charger" if d["solar_charger"] else f"type {d['record_type']}"),
             d["key"],
             f"{d['age_s']:g}s",
             "*" if d["current"] else "",

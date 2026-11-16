@@ -54,6 +54,13 @@ def advert(address: str = A, *, rssi: float = -60, name: str | None = "SmartSola
     return Advertisement(address=address, name=name, rssi=rssi, seen_at=time.monotonic() if at is None else at, data=advert_data(**kw))
 
 
+def product_advert(address: str = A, *, rssi: float = -60, name: str | None = None, model: int = 0xA053, handle: object | None = None) -> Advertisement:
+    """The advert of a device with Instant Readout disabled: only ``10 02 | model``, as the real one sent it
+    (``10 02 53 a0``). The name is only in the scan response, which often does not get through."""
+    data = bytes([instant.PREFIX, 0x02]) + model.to_bytes(2, "little")
+    return Advertisement(address=address, name=name, rssi=rssi, seen_at=time.monotonic(), data=data, handle=handle)
+
+
 def default_values() -> dict[int, bytes]:
     return {
         0x0102: bytes.fromhex("00640100"),

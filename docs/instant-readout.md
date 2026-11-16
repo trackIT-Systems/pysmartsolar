@@ -10,6 +10,7 @@ The charger broadcasts its main values in the manufacturer data (company id `0x0
 
 * `10` is the prefix, the byte after it (`02`) is not interpreted (see [unknowns.md](unknowns.md)).
 * `model` is `0xA053` for the SmartSolar 75/15 (the product id).
+* With Instant Readout disabled, the device sends only `10 02 | model` (4 bytes, e.g. `10 02 53 a0`) in a connectable advert. There is no record type: `smartsolar scan` shows `readout off`, a solar charger is recognised by its product id (`0x0300`, `0xA040`..`0xA1FF`) or its `SmartSolar` name, and it can only be read over GATT (`gatt.fallback`).
 * `record type` `0x01` is a solar charger. Other types (battery monitors, inverters, ...) exist; they are listed by `smartsolar scan` but never decoded.
 * `key check` is the first byte of the key. It is only a quick test for a wrong key (1 in 256 false positives), not authentication.
 * The ciphertext is AES-128-CTR. The counter block is the nonce as a 16 byte little-endian integer. The nonce is a counter that the device increments for every new reading; repeated nonces are repeated readings.
