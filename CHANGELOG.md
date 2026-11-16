@@ -17,6 +17,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- **`Future exception was never retrieved` (ERROR) after a lost GATT link.** A register request or write registers the wait for its answer before the request is written. When the link was lost during that write, the write failed and the wait got the `link lost` error, which nobody awaited any more; asyncio logged it with a traceback. The wait is now dropped when the write fails.
 - **Retry delays overflowed.** After 1024 retries without success (about 8.5 h of a VE.Direct port that is not there, or of failing GATT connections), the delay calculation raised `OverflowError(34, 'Numerical result out of range')` and the daemon exited. The retry count no longer grows once the delay has reached its maximum (#4).
 
 ### Changed
