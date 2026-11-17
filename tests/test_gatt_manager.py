@@ -367,6 +367,18 @@ def test_a_write_in_hold_mode_uses_the_open_link():
     run(go())
 
 
+def test_the_load_algorithm_keeps_the_streetlight_bit():
+    async def go():
+        backend = FakeBackend()
+        backend.registers[0xEDAB] = b"\x82"  # streetlight on (bit 7), conventional1
+        async with Rig("hold", backend=backend) as rig:
+            await until(lambda: rig.mgr.state is GattState.CONNECTED)
+            (result,) = await asyncio.wait_for(rig.mgr.request_write(build_write({"load_output_control": "off"})), 5.0)
+            assert backend.registers[0xEDAB] == b"\x80" and result["value"] == "off" and result["ok"]
+
+    run(go())
+
+
 def test_a_refused_write_fails_the_request_but_keeps_the_link():
     async def go():
         backend = FakeBackend()

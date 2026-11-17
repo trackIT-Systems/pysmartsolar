@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -49,6 +50,20 @@ async def check_write(read: Reader, item: WriteItem, *, via_serial: bool = False
         except ProtocolError:
             pass  # an older firmware does not report it: the 12 V limits scaled by the system voltage
         check_voltage_limits(item, writable, system_voltage=system, vrange=vrange)
+
+
+def keep_other_bits(item: WriteItem, old_raw: Any | None) -> WriteItem:
+    """A setting that is only some bits of its register keeps the other bits as the device has them:
+    bit 7 of the load output control (0xEDAB) switches the streetlight function, the setting is bits 0..3."""
+    writable = WRITABLE[item.name]
+    if writable.mask is None:
+        return item
+    if old_raw is None:
+        raise WriteFailed(f"{item.name}: cannot read the register first, which keeps its other bits")
+    old = int.from_bytes(bytes(old_raw), "little")
+    new = int.from_bytes(item.raw, "little")
+    raw = ((old & ~writable.mask) | (new & writable.mask)).to_bytes(writable.width, "little")
+    return dataclasses.replace(item, raw=raw)
 
 
 def write_result(item: WriteItem, old_raw: Any | None, read_raw: Any) -> dict[str, Any]:

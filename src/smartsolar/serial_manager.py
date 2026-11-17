@@ -23,7 +23,7 @@ from smartsolar.config import SerialConfig
 from smartsolar.errors import ConnectError, NoDataError, NotConnectedError, ProtocolError, UnavailableError, WriteFailed
 from smartsolar.failures import Failures
 from smartsolar.reading import Event, Reading, Value
-from smartsolar.registers import check_write, write_result
+from smartsolar.registers import check_write, keep_other_bits, write_result
 from smartsolar.serial_link import SerialLink, is_pattern, open_pyserial
 from smartsolar.state import Cache, SerialStats
 from smartsolar.vreg import POLLED_VREGS, VREG_FIRMWARE, WriteItem, decode_values, known_vreg
@@ -287,6 +287,7 @@ class SerialManager:
             for item in items:
                 await check_write(self._get, item, via_serial=True)
                 old_raw = old.get(item.vreg)
+                item = keep_other_bits(item, old_raw)
                 reply = await self._exchange(vedirect.set_frame(item.vreg, item.raw), lambda f, v=item.vreg: f.command == CMD_SET and f.vreg == v)
                 if reply.flags:
                     raise WriteFailed(f"{item.name}: the device refused the value (flags 0x{reply.flags:02x})")

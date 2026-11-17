@@ -245,6 +245,17 @@ def test_a_write_is_checked_written_and_read_back():
     run(go())
 
 
+def test_the_load_algorithm_keeps_the_streetlight_bit():
+    async def go():
+        dev = FakeSerial()
+        dev.registers[0xEDAB] = b"\x82"  # streetlight on (bit 7), conventional1
+        async with running(dev) as s:
+            (result,) = await s.manager.write(build_write({"load_output_control": "on"}))
+            assert dev.registers[0xEDAB] == b"\x84" and result["old"] == "conventional1" and result["value"] == "on" and result["ok"]
+
+    run(go())
+
+
 def test_a_refused_write_is_reported():
     async def go():
         dev = FakeSerial()

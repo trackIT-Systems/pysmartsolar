@@ -34,7 +34,7 @@ from smartsolar.failures import Failures
 from smartsolar.gatt_session import GattSession
 from smartsolar.instant import parse_model
 from smartsolar.reading import Event, Reading, device_id
-from smartsolar.registers import check_write, write_result
+from smartsolar.registers import check_write, keep_other_bits, write_result
 from smartsolar.state import GattStats
 from smartsolar.vreg import (
     POLLED_VREGS,
@@ -453,6 +453,7 @@ class GattManager:
                             old_raw = await self._until_stop(session.request(item.vreg, self.cfg.request_timeout_s))
                         except SmartsolarError:
                             old_raw = None
+                    item = keep_other_bits(item, old_raw)
                     await self._until_stop(session.write_register(item.vreg, item.raw, self.cfg.request_timeout_s))
                     read_raw = await self._until_stop(session.request(item.vreg, self.cfg.request_timeout_s))
                     result = write_result(item, old_raw, read_raw)
