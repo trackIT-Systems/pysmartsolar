@@ -23,7 +23,7 @@ On the Raspberry Pi 3 and 5 Wi-Fi and Bluetooth share one chip. With the 2.4 GHz
 
 ## The device
 
-* **A refused write is silent.** Accepted writes are echoed, refused ones get no answer. Always read back.
+* **Refused writes.** Accepted writes are echoed. Over GATT, a write to a read-only register gets ValueResponse 3 and one to an unknown register ValueResponse 1; whether a value out of the device's range gets an answer is not known, so no answer within the timeout counts as a refusal too. Always read back.
 * **Error 119.** Charge voltages outside the device's own range (reported in `0x2211`/`0x2212`, 8..17.4 V on a 12 V system) and a temperature compensation beyond 21 mV/K put the charger into "invalid settings" until a factory reset and a power cycle. The daemon checks before writing; limits in the register table are only static sanity limits.
 * **Presets swallow charge voltages.** With a battery type other than `user`, writes of absorption, float, equalisation voltage and temperature compensation are accepted and ignored. The daemon refuses them, and `profile load` leaves them out when the file selects a preset.
 * **Load output algorithm change.** A new algorithm (`0xEDAB`) becomes active after about 2 minutes, not at once. An early test that read "alt 1 did not switch on" was this delay.

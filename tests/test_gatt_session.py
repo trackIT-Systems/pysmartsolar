@@ -162,7 +162,7 @@ def test_request_for_an_unavailable_register_fails_and_is_remembered_by_refresh(
     async def go():
         backend, _, session, _ = await open_session(keepalive_s=0)
         await session.start()
-        with pytest.raises(ProtocolError, match="not available"):
+        with pytest.raises(ProtocolError, match="0xbeef: unknown register"):
             await session.request(0xBEEF, 1.0)
         await session.refresh([0xBEEF, 0xEDD5, 0xEDAB])
         assert session.unavailable == {0xBEEF} and 0xEDD5 in session.values and 0xEDAB in session.values
@@ -216,13 +216,18 @@ def test_instant_readout_is_read_and_written_on_the_bluetooth_part():
     run(go())
 
 
-def test_a_write_the_device_does_not_answer_fails():
+def test_a_refused_write_fails():
     async def go():
         backend, _, session, _ = await open_session(keepalive_s=0)
         await session.start()
-        with pytest.raises(WriteFailed, match="did not confirm"):
-            await session.write_register(0xEDD5, b"\x00\x00", 0.2)  # a read-only register: no answer
+        with pytest.raises(WriteFailed, match="0xedd5: access denied"):
+            await session.write_register(0xEDD5, b"\x00\x00", 1.0)  # a read-only register
+        with pytest.raises(WriteFailed, match="0xbeef: unknown register"):
+            await session.write_register(0xBEEF, b"\x00", 1.0)
         assert backend.registers[0xEDD5] == (1331).to_bytes(2, "little")
+        backend.refuse_writes = True
+        with pytest.raises(WriteFailed, match="did not confirm"):
+            await session.write_register(0xEDAB, b"\x04", 0.2)  # a value it does not take: no answer
         await session.close()
 
     run(go())

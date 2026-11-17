@@ -44,6 +44,7 @@ def good(document, size=None):
     [
         (b"", "VCCF"),
         (b"XXXX\x48\x00\x00\x00\x01x", "VCCF"),
+        (b"VCCF\x49\x00\x00\x00\x01x", "VCCFH"),  # VictronConnect requires all five bytes
         (b"VCCF\x48\x00\x00\x00\x05notzlib", "decompress"),
         (b"VCCF\x48\xff\xff\xff\xff" + zlib.compress(b"{}"), "refusing"),
         (good({"data": {}}, size=5), "size"),

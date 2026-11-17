@@ -5,10 +5,10 @@ The file VictronConnect saves with "Share settings" / "Save settings to file". `
 ## Container
 
 ```
-"VCCF" | 0x48 | u32 big-endian size of the JSON | zlib stream of a JSON document
+"VCCFH" | u32 big-endian size of the JSON | zlib stream of a JSON document
 ```
 
-The byte `0x48` after the magic is constant in the files seen (see [unknowns.md](unknowns.md)). The reader refuses bad magic, a wrong size, bad zlib data or JSON, and limits the sizes (8 MB of JSON, 4 MB file) against decompression bombs.
+The magic is the five bytes `VCCFH`, the rest is Qt's `qCompress` of the JSON (VictronConnect's `FileManager::writeCompressedFile` and `readFile`, which refuses any other header). VictronConnect's reader looks for `settings`, `capabilities`, `data`, `extendedData` and `productid`; the files it saved itself (v6.05) and the ones `profile save` writes have `data` and no `settings` or `capabilities`. The reader refuses bad magic, a wrong size, bad zlib data or JSON, and limits the sizes (8 MB of JSON, 4 MB file) against decompression bombs.
 
 ## JSON
 

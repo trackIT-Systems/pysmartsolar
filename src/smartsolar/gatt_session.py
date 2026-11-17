@@ -150,7 +150,8 @@ class GattSession:
                 self.errors[vreg] = code if isinstance(code, int) else -1
             for _, future in self._waiters.pop((message.instance, vreg), []):
                 if not future.done():
-                    future.set_exception(ProtocolError(f"register 0x{vreg:04x} is not available (code {code})"))
+                    reason = vesmart.RESULTS.get(code, f"code {code}") if isinstance(code, int) else f"code {code!r}"
+                    future.set_exception(ProtocolError(f"register 0x{vreg:04x}: {reason}"))
         elif message.op == Op.RESPONSE:
             opcode, result = message.args
             if result != 0:

@@ -227,10 +227,12 @@ class FakeLink:
                     self._send(value8(vreg, raw, vesmart.ROOT))
             elif m.instance == CHARGER:
                 self.backend.set_log.append((vreg, raw))
-                if vreg in WRITABLE_REGISTERS and vreg not in BLUETOOTH_VREGS and not self.backend.refuse_writes:
-                    self.backend.registers[vreg] = raw
-                    self._send(value8(vreg, raw, CHARGER))
-                # a write the device does not accept gets no answer
+                if vreg in WRITABLE_REGISTERS and vreg not in BLUETOOTH_VREGS:
+                    if not self.backend.refuse_writes:  # a value it does not take: no answer
+                        self.backend.registers[vreg] = raw
+                        self._send(value8(vreg, raw, CHARGER))
+                else:  # as a SmartSolar 75/15: 3 for a read-only register, 1 for an unknown one
+                    self._send(_items(9, CHARGER, vreg, 3 if vreg in self.backend.registers else 1))
 
     def _register(self, instance: int, vreg: int) -> bytes | None:
         if instance == vesmart.ROOT:

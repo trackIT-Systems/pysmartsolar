@@ -8,7 +8,7 @@ The charger broadcasts its main values in the manufacturer data (company id `0x0
 10 02 | model u16 LE | record type u8 | nonce u16 LE | key check u8 | ciphertext
 ```
 
-* `10` is the prefix, the byte after it (`02`) is not interpreted (see [unknowns.md](unknowns.md)).
+* `10` is the prefix. The byte after it says what kind of VE.Smart device sends (VictronConnect's `VeSmartDevice` advert parser): bit 6 a bootloader; otherwise the low nibble `2` a gateway, `3` a "gateway4", anything else an end product; bit 7 clear sets a flag that VictronConnect keeps per device without naming it. The SmartSolar sends `02`: a gateway, which matches its Bluetooth part exposing the charger as an instance below it (see [gatt-protocol.md](gatt-protocol.md)). The daemon does not interpret it.
 * `model` is `0xA053` for the SmartSolar 75/15 (the product id).
 * With Instant Readout disabled, the device sends only `10 02 | model` (4 bytes, e.g. `10 02 53 a0`) in a connectable advert. There is no record type: `smartsolar scan` shows `readout off`, a solar charger is recognised by its product id (`0x0300`, `0xA040`..`0xA1FF`) or its `SmartSolar` name, and it can only be read over GATT (`gatt.fallback`).
 * `record type` `0x01` is a solar charger. Other types (battery monitors, inverters, ...) exist; they are listed by `smartsolar scan` but never decoded.

@@ -3,7 +3,7 @@
 A settings file is a container around a JSON document that holds VictronConnect's model of one
 device: the settings, but also live values, history and the serial number::
 
-    "VCCF"  0x48  <u32 big endian: size of the JSON>  <zlib stream of the JSON>
+    "VCCFH"  <u32 big endian: size of the JSON>  <zlib stream of the JSON>   (Qt's qCompress)
 
 The JSON has ``productid`` ("0xA053"), ``minfwversion``, ``structureversion``, ``appName``,
 ``appversion``, ``description`` and ``data``, a flat object with keys such as
@@ -21,8 +21,7 @@ from typing import Any
 
 from smartsolar.errors import ProfileError
 
-MAGIC = b"VCCF"
-FORMAT_BYTE = 0x48
+MAGIC = b"VCCFH"  # VictronConnect writes and requires these five bytes, then qCompress(JSON)
 HEADER_LEN = 9
 MAX_JSON_BYTES = 8 * 1024 * 1024
 MAX_FILE_BYTES = 4 * 1024 * 1024
@@ -51,8 +50,8 @@ def _hex_number(text: Any) -> int | None:
 
 
 def parse_vcsf(blob: bytes, source: str = "settings file") -> VcsfFile:
-    if len(blob) < HEADER_LEN or blob[:4] != MAGIC:
-        raise ProfileError(f"{source}: not a VictronConnect settings file (no VCCF header)")
+    if len(blob) < HEADER_LEN or blob[: len(MAGIC)] != MAGIC:
+        raise ProfileError(f"{source}: not a VictronConnect settings file (no VCCFH header)")
     size = struct.unpack(">I", blob[5:9])[0]
     if size > MAX_JSON_BYTES:
         raise ProfileError(f"{source}: the settings data claims {size} bytes, refusing it")
@@ -111,4 +110,4 @@ def build_vcsf(
         "structureversion": 1,
     }
     text = json.dumps(document, indent=4, sort_keys=True).encode("utf-8")
-    return MAGIC + bytes([FORMAT_BYTE]) + struct.pack(">I", len(text)) + zlib.compress(text)
+    return MAGIC + struct.pack(">I", len(text)) + zlib.compress(text)

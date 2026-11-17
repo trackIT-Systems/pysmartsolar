@@ -47,23 +47,41 @@ class Op(IntEnum):
     GET_DEVICES = 1  # ()
     DEVICE_LIST = 2  # ([instance, parent, instance, parent, ...])
     SUBSCRIBE = 3  # (instance): the device then pushes the values of the instance as they change
+    UNSUBSCRIBE = 4  # (instance): answered with RESPONSE; the pushes stop
     GET_VALUES = 5  # (instance, [vreg, ...])
     SET_VALUES = 6  # (instance, [vreg, bytes]): answered with a VALUE that echoes the stored value
     RESPONSE = 7  # (instance, opcode, result): 0 is success
     VALUE = 8  # (instance, vreg, bytes)
-    VALUE_RESPONSE = 9  # (instance, vreg, result): the register could not be read (1: not available)
+    VALUE_RESPONSE = 9  # (instance, vreg, result): a get or set of the register failed, see RESULTS
+    # The "path" interface of devices whose parameters have FLAG_PATHS; not used by the SmartSolar.
+    GET_PATH_LIST = 10  # (instance)
+    GET_PATH_VALUES = 11  # (instance, [path index, ...])
+    SET_PATH_VALUE = 12  # (instance, [path index, value])
+    PATH_LIST = 13
+    NEW_PATH = 14
+    PATH_VALUE = 15
+    PATH_VALUE_RESPONSE = 16
+
+
+# ValueResponse results seen on a SmartSolar 75/15
+RESULTS = {
+    1: "unknown register",
+    3: "access denied (a write to a read-only register, a read of a write-only one)",
+    -5: "index out of range",
+}
 
 
 # Arguments after the opcode. Messages with an instance have it as the first argument.
 DEVICE_ARGS = {Op.DEVICE_LIST: 1, Op.RESPONSE: 3, Op.VALUE: 3, Op.VALUE_RESPONSE: 3}
-REQUEST_ARGS = {Op.GET_DEVICES: 0, Op.SUBSCRIBE: 1, Op.GET_VALUES: 2, Op.SET_VALUES: 2}
+REQUEST_ARGS = {Op.GET_DEVICES: 0, Op.SUBSCRIBE: 1, Op.UNSUBSCRIBE: 1, Op.GET_VALUES: 2, Op.SET_VALUES: 2}
 _WITHOUT_INSTANCE = {Op.GET_DEVICES, Op.DEVICE_LIST}
 
 # Control opcodes
-CTL_ERROR = 0xF7  # from the device: an error code follows
+CTL_ERROR = 0xF7  # from the device: an error code follows (s8, or s16 if longer); VictronConnect drops the link on 3
 CTL_RESET = 0xF8  # from the device: drop the partly received chunk
 CTL_READY = 0xF9  # both ways: n more chunks may be sent
-OPEN = bytes([0xFA, 0x80, 0xFF])  # written once after the parameters were read; constant in VictronConnect
+OPEN = bytes([0xFA, 0x80, 0xFF])  # written once after the parameters were read; constant and unnamed in VictronConnect
+FLAG_PATHS = 0x01  # parameters flags: the device has the path interface (VictronConnect then asks for its paths)
 
 INITIAL_GRANT = 0x80
 GRANT_AFTER = 0x40  # chunks received before they are given back
