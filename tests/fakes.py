@@ -8,17 +8,15 @@ from collections.abc import Callable
 
 import cbor2
 
-from smartsolar import instant
+from smartsolar import instant, vesmart
 from smartsolar.ble import Advertisement
 from smartsolar.errors import ConnectError, NotConnectedError
-from smartsolar.vreg import PING, parse_requests
 
 TEST_KEY = bytes.fromhex("4b2f9c10e7a35d68c1b0f4372ea98d56")
 OTHER_KEY = bytes.fromhex("4b00112233445566778899aabbccddee")  # same check byte, other key
 WRONG_CHECK_KEY = bytes.fromhex("aa2f9c10e7a35d68c1b0f4372ea98d56")
 A = "F7:48:18:8A:77:9D"
 B = "E1:22:33:44:55:66"
-ACK = bytes.fromhex("f901")
 
 
 def free_port() -> int:
@@ -41,8 +39,18 @@ async def until(predicate: Callable[[], bool], timeout: float = 3.0) -> None:
         await asyncio.sleep(0.01)
 
 
-def record8(vreg: int, value: bytes, ctx: int = 0) -> bytes:
-    return bytes([0x08, ctx]) + cbor2.dumps(vreg) + cbor2.dumps(value)
+CHARGER = 3  # the instance of the charger in the fake's device list [0, 0, 1, 0, 3, 1]
+ROOT_VALUES = {0xEC65, 0xEC66}  # registers of the Bluetooth part (instance 0)
+PARAMS = bytes.fromhex("00040001de4a00")  # the control characteristic of the SmartSolar 75/15: 1 free chunk, 222 / 74 bytes
+
+
+def _items(*items) -> bytes:
+    return b"".join(cbor2.dumps(i) for i in items)
+
+
+def value8(vreg: int, value: bytes, instance: int = CHARGER) -> bytes:
+    """A VALUE message."""
+    return _items(8, instance, vreg, value)
 
 
 def advert_data(*, nonce: int = 1, key: bytes = TEST_KEY, model: int = 0xA053, record_type: int = 1, **record) -> bytes:
@@ -74,7 +82,7 @@ def default_values() -> dict[int, bytes]:
 
 
 def default_registers() -> dict[int, bytes]:
-    """What the fake answers to a read (ctx 3); the values are the ones the real device had."""
+    """What the fake charger (instance 3) answers to a read; the values are the ones the real device had."""
     registers = dict(default_values())
     registers.update(
         {
@@ -98,7 +106,12 @@ WRITABLE_REGISTERS = {w.vreg for w in WRITABLE.values()}
 
 
 class FakeLink:
-    """A GATT link to a fake device: answers the init sequence like the real one did."""
+    """A GATT link to a fake device that speaks VE.Smart like the SmartSolar 75/15 does.
+
+    Instance 3 is the charger (``backend.registers`` answer reads, ``backend.values`` are pushed after
+    its subscription), instance 0 the Bluetooth part (the key and the MAC from ``backend.values``,
+    ``backend.root_registers``). It allows one chunk at a time and counts chunks written without credit.
+    """
 
     def __init__(self, address: str, backend: FakeBackend, on_disconnect: Callable[[], None]) -> None:
         self.address = address
@@ -107,8 +120,14 @@ class FakeLink:
         self._connected = True
         self._callback: Callable[[str, bytes], None] | None = None
         self.writes: list[tuple[str, bytes]] = []
+        self.messages: list[vesmart.Message] = []  # what the client sent, decoded
         self.pings = 0
         self.disconnect_calls = 0
+        self.credit = 0  # chunks the client may send
+        self.credit_violations = 0
+        self.granted = 0  # chunks the client allowed the device
+        self.subscribed: list[int] = []
+        self._rx = b""
         self._deadline: asyncio.TimerHandle | None = None
 
     @property
@@ -118,11 +137,17 @@ class FakeLink:
     async def start_notify(self, callback: Callable[[str, bytes], None]) -> None:
         self._callback = callback
 
+    async def read(self, char: str) -> bytes:
+        if not self._connected:
+            raise NotConnectedError("not connected")
+        assert char == vesmart.CONTROL
+        return self.backend.params
+
     async def write(self, char: str, data: bytes) -> None:
         if not self._connected:
             raise NotConnectedError("not connected")
         self.writes.append((char, data))
-        asyncio.get_running_loop().call_soon(self._respond, char, data)
+        asyncio.get_running_loop().call_soon(self._receive, char, data)
 
     async def pair(self, passkey: str, timeout_s: float) -> None:
         self.backend.pair_calls.append(passkey)
@@ -141,45 +166,76 @@ class FakeLink:
         if self._connected and self._callback is not None:
             self._callback(char, data)
 
-    def _respond(self, char: str, data: bytes) -> None:
-        self._emit("0021", ACK)
-        if data.startswith(PING):
-            self.pings += 1
-            self._arm_deadline()
-            self._emit("0024", bytes.fromhex("08001893421027"))
-        if char == "0024" and data[:1] in (b"\x05", b"\x06"):
-            self._answer_requests(data)
-        if char == "0021" and data == bytes.fromhex("f941"):
-            burst = b"".join(record8(v, raw, ctx=3 if v != 0xEC65 else 0) for v, raw in self.backend.values.items())
-            for i in range(0, len(burst), 20):  # a record can be split across notifications
-                self._emit("0024", burst[i : i + 20])
+    def _send(self, *messages: bytes) -> None:
+        """One chunk to the client, in pieces of the device's maximum ATT length."""
+        for char, part in vesmart.pieces(b"".join(messages), 74):
+            self._emit(char, part)
 
-    def _answer_requests(self, data: bytes) -> None:
-        try:
-            requests = parse_requests(data)
-        except Exception:  # a record that continues in the next write
+    def _allow(self) -> None:
+        self.credit += 1
+        self._emit(vesmart.CONTROL, bytes([vesmart.CTL_READY, 1]))
+
+    def _receive(self, char: str, data: bytes) -> None:
+        if char == vesmart.CONTROL:
+            if data == vesmart.OPEN:
+                self._arm_deadline()  # a link without keepalives is closed too
+                self._allow()
+            elif data[:1] == bytes([vesmart.CTL_READY]):
+                self.granted += data[1]
             return
-        for kind, ctx, items in requests:
-            if ctx != 3:
-                continue  # the real device refuses these for most registers; the tests do not need it
-            if kind == 5:
-                for vreg in items:
+        if char == vesmart.DATA:
+            self._rx += data
+            return
+        chunk, self._rx = self._rx + data, b""
+        if self.credit <= 0:
+            self.credit_violations += 1
+        self.credit -= 1
+        self._allow()
+        for message in vesmart.parse_messages(chunk, vesmart.REQUEST_ARGS):
+            self.messages.append(message)
+            self._handle(message)
+
+    def _handle(self, m: vesmart.Message) -> None:
+        if m.op == vesmart.Op.GET_DEVICES:
+            self._send(cbor2.dumps(2) + cbor2.dumps([0, 0, 1, 0, CHARGER, 1]))
+        elif m.op == vesmart.Op.SUBSCRIBE:
+            self.subscribed.append(m.instance)
+            self._send(_items(7, m.instance, 3, 0))
+            if m.instance == CHARGER:
+                pushed = [value8(v, raw, CHARGER) for v, raw in self.backend.values.items() if v not in ROOT_VALUES]
+                if pushed:
+                    self._send(*pushed)
+        elif m.op == vesmart.Op.GET_VALUES:
+            answers = []
+            for vreg in m.args[0]:
+                raw = self._register(m.instance, vreg)
+                if m.instance == CHARGER:
                     self.backend.get_log.append(vreg)
-                    if vreg in self.backend.registers:
-                        self._emit("0024", record8(vreg, self.backend.registers[vreg], ctx=3))
-                    else:
-                        self._emit("0024", bytes([0x09, 3]) + cbor2.dumps(vreg) + cbor2.dumps(1))
-            elif kind == 6:
-                vreg, raw = items
+                answers.append(value8(vreg, raw, m.instance) if raw is not None else _items(9, m.instance, vreg, 1))
+            self._send(*answers)
+        elif m.op == vesmart.Op.SET_VALUES:
+            vreg, raw = m.args[0]
+            if m.instance == vesmart.ROOT and vreg == vesmart.VREG_KEEPALIVE:
+                self.pings += 1
+                self._arm_deadline()
+                self._send(value8(vreg, raw, vesmart.ROOT))
+            elif m.instance == CHARGER:
                 self.backend.set_log.append((vreg, raw))
                 if vreg in WRITABLE_REGISTERS and not self.backend.refuse_writes:
                     self.backend.registers[vreg] = raw
-                    self._emit("0024", record8(vreg, raw, ctx=3))
+                    self._send(value8(vreg, raw, CHARGER))
                 # a write the device does not accept gets no answer
+
+    def _register(self, instance: int, vreg: int) -> bytes | None:
+        if instance == vesmart.ROOT:
+            return self.backend.values.get(vreg) if vreg in ROOT_VALUES else self.backend.root_registers.get(vreg)
+        if instance == CHARGER:
+            return self.backend.registers.get(vreg)
+        return None
 
     def push(self, vreg: int, raw: bytes) -> None:
         self.backend.values[vreg] = raw
-        self._emit("0024", record8(vreg, raw, ctx=3))
+        self._send(value8(vreg, raw, CHARGER))
 
     def _arm_deadline(self) -> None:
         if self.backend.keepalive_timeout is None:
@@ -200,8 +256,10 @@ class FakeBackend:
         self.on_advert: Callable[[Advertisement], None] | None = None
         self.scanning = False
         self.scan_starts = 0
+        self.params = PARAMS
         self.values = default_values()
         self.registers = default_registers()
+        self.root_registers = {0x0100: bytes.fromhex("0097a1fe"), 0x0102: bytes.fromhex("00180200")}
         self.get_log: list[int] = []
         self.set_log: list[tuple[int, bytes]] = []
         self.refuse_writes = False

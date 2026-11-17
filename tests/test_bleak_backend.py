@@ -66,6 +66,11 @@ class FakeClient:
     async def write_gatt_char(self, uuid, data, response=True):
         self.writes.append((uuid, data, response))
 
+    async def read_gatt_char(self, uuid):
+        if not self.is_connected:
+            raise BleakError("Not connected")
+        return bytearray.fromhex("00040001de4a00") if uuid == CHAR_UUIDS["0021"] else bytearray()
+
     async def pair(self):
         if isinstance(self.pair_result, Exception):
             raise self.pair_result
@@ -86,6 +91,18 @@ def test_link_notifications_arrive_with_the_characteristic_name():
         assert got == [("0024", b"\x08\x00")]
         await link.write("0021", b"\xf9\x80")
         assert client.writes == [(CHAR_UUIDS["0021"], b"\xf9\x80", False)]  # without response
+
+    run(go())
+
+
+def test_link_reads_the_control_characteristic():
+    async def go():
+        client = FakeClient()
+        link = bb.BleakLink(A, client)
+        assert await link.read("0021") == bytes.fromhex("00040001de4a00")
+        client.is_connected = False
+        with pytest.raises(NotConnectedError):
+            await link.read("0021")
 
     run(go())
 

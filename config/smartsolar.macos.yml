@@ -37,7 +37,7 @@ gatt:
   fallback: "hold"
   poll_interval_s: 900
   collect_s: 15
-  keepalive_s: 5
+  keepalive_s: 3
   connect_timeout_s: 30
   pair_timeout_s: 60             # long enough to type the passkey into the macOS dialog
   request_timeout_s: 10

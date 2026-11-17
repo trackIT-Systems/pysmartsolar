@@ -26,7 +26,7 @@ All three formats of a reading carry the same columns in the same order:
 1. `device`: the serial number, else the MAC address.
 2. The columns listed below. A value the reading lacks is `null` (empty in CSV).
 
-CBOR has no key names and writes each number in the smallest form that keeps it exact. That makes it the smallest format, for cellular links: a VE.Direct reading is about 145 bytes as CBOR and 135 as CSV. JSON repeats all 54 column names, null or not, and is about 1.5 kB. Decode a CBOR array by the column order below; the files have the same order after `time`, with `block` after `device`.
+CBOR has no key names and writes each number in the smallest form that keeps it exact. That makes it the smallest format, for cellular links: a VE.Direct reading is about 145 bytes as CBOR and 135 as CSV. JSON repeats all 75 column names, null or not, and is about 1.5 kB. Decode a CBOR array by the column order below; the files have the same order after `time`, with `block` after `device`.
 
 A VE.Direct reading as CSV:
 
@@ -68,7 +68,7 @@ This matches the readings and `events/cbor`, which are on the same level. There 
 
 ## Columns
 
-Measurements first, then the settings and identity values (mostly from GATT). Where the sources disagree, the column has one name and one unit:
+Measurements first, then the settings and identity values (mostly from GATT), then GATT values added later (at the end, so the older columns keep their position in the CBOR array). `errors_total` and `errors_today` are the four error codes of the history records as `e1,e2,e3,e4` (charger error codes, see `charger_error`). Where the sources disagree, the column has one name and one unit:
 - GATT's `panel_power` is published as `pv_power`, and `load_output_current` as `load_current`.
 - `yield_today` is in kWh; the advertisement's Wh are converted.
 
@@ -96,7 +96,7 @@ Measurements first, then the settings and identity values (mostly from GATT). Wh
 | `tracker_mode` |  | Tracker mode | VE.Direct |
 | `off_reason` |  | Off reason | VE.Direct |
 | `device_mode` |  | Device mode | GATT |
-| `day_sequence` |  | Day sequence number | VE.Direct |
+| `day_sequence` |  | Day sequence number | VE.Direct, GATT (history record `0x1050`) |
 | `mac_address` |  | MAC address | GATT |
 | `firmware_version` |  | Firmware version | GATT |
 | `uptime` | s | Uptime | GATT |
@@ -128,6 +128,27 @@ Measurements first, then the settings and identity values (mostly from GATT). Wh
 | `load_aes_timer` | min | Load aes timer | GATT |
 | `rx_port_function` |  | Rx port function | GATT |
 | `tx_port_function` |  | Tx port function | GATT |
+| `channel_1_current_ma` | mA | Channel 1 current, in mA | GATT |
+| `pv_power_trend` | W | PV power for the trend graphs (1 W) | GATT |
+| `load_current_trend` | A | Load output current for the trend graphs (0.1 A) | GATT |
+| `remote_control_used` |  | Remote control flags (bit 1: remote on/off) | GATT |
+| `ble_mode` |  | Bluetooth mode | GATT |
+| `ble_capabilities` |  | Bluetooth capability flags | GATT |
+| `errors_total` |  | Last four error codes, all time | GATT |
+| `yield_system_total` | kWh | Yield total, not resettable | GATT |
+| `panel_voltage_max_total` | V | Maximum panel voltage, all time | GATT |
+| `battery_voltage_max_total` | V | Maximum battery voltage, all time | GATT |
+| `history_days` |  | Days in the history | GATT |
+| `battery_voltage_min_total` | V | Minimum battery voltage, all time | GATT |
+| `consumed_today` | kWh | Load output consumption today | GATT |
+| `battery_voltage_max_today` | V | Maximum battery voltage today | GATT |
+| `battery_voltage_min_today` | V | Minimum battery voltage today | GATT |
+| `errors_today` |  | Last four error codes today | GATT |
+| `time_bulk_today` | min | Time in bulk today | GATT |
+| `time_absorption_today` | min | Time in absorption today | GATT |
+| `time_float_today` | min | Time in float today | GATT |
+| `battery_current_max_today` | A | Maximum battery current today | GATT |
+| `panel_voltage_max_today` | V | Maximum panel voltage today | GATT |
 
 ## CSV files
 

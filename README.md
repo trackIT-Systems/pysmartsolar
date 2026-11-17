@@ -142,7 +142,7 @@ The file is a `VCCF` header and a zlib-compressed JSON document with VictronConn
 
 ## GATT protocol
 
-Service `306b0001-b081-4037-83dc-e59fcc3cdfd0`, three characteristics (`0021` control, `0024` and `0027` data). Pairing: SMP passkey, default `000000`. A BlueZ agent that answers the passkey request is registered from before the connect until pairing is done (`dbus-fast`). Answers are records `[kind][ctx][CBOR register id][CBOR value]`, requests are `[0x05 get | 0x06 set][ctx][CBOR array]`; registers are read and written in context 3 (contexts 0 and 1 only answer for a few static registers). The details are in `src/smartsolar/vreg.py`, the register list is `smartsolar vregs`. The protocol, the quirks of the device and what is still unknown are written down in [docs/](docs/README.md).
+Service `306b0001-b081-4037-83dc-e59fcc3cdfd0`, three characteristics (`0021` control, `0024` lastData, `0027` data). Pairing: SMP passkey, default `000000`. A BlueZ agent that answers the passkey request is registered from before the connect until pairing is done (`dbus-fast`). The service speaks VE.Smart, VictronConnect's protocol: CBOR messages (`[opcode][instance][arguments]`) in chunks with credit-based flow control on the control characteristic; the charger's registers are in one instance of the device's tree (3 on a SmartSolar 75/15). The protocol is in `src/smartsolar/vesmart.py`, the registers in `src/smartsolar/vreg.py`, the register list is `smartsolar vregs`. The protocol, the quirks of the device and what is still unknown are written down in [docs/](docs/README.md).
 
 ## Layout
 

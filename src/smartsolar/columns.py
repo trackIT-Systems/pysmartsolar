@@ -21,7 +21,7 @@ from typing import Any
 from smartsolar.reading import Reading
 from smartsolar.tracker import ADVERT_FIELDS
 from smartsolar.vedirect import TEXT_FIELDS
-from smartsolar.vreg import VREGS
+from smartsolar.vreg import RECORDS, VREGS
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +71,7 @@ def _sources() -> list[tuple[str, str, str, str]]:
     sources = [("advert", name, friendly, unit) for name, friendly, unit in ADVERT_FIELDS]
     sources += [("vedirect", f.name, f.friendly, f.unit) for f in TEXT_FIELDS]
     sources += [("gatt", v.name, v.friendly, v.unit) for v in VREGS.values()]
+    sources += [("gatt", f.name, f.friendly, f.unit) for r in RECORDS.values() for f in r.fields]
     return sources
 
 

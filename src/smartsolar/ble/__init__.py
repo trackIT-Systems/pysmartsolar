@@ -41,6 +41,9 @@ class GattLink(Protocol):
         ``callback(char, data)`` runs on the event loop thread.
         """
 
+    async def read(self, char: str) -> bytes:
+        """Read a characteristic. Raises NotConnectedError if the link is gone, LinkError otherwise."""
+
     async def write(self, char: str, data: bytes) -> None:
         """Write without response. Raises NotConnectedError if the link is gone, LinkError otherwise."""
 

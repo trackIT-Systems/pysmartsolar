@@ -32,7 +32,7 @@ gatt:
   passkey: "000000"              # the pairing passkey of the device (Victron default)
   poll_interval_s: 900
   collect_s: 15
-  keepalive_s: 5                 # the device closes the link 10 s after the last ping
+  keepalive_s: 3                 # the device closes the link 10 s after the last keepalive (VictronConnect: 3.3 s)
   connect_timeout_s: 30
   pair_timeout_s: 20
   request_timeout_s: 10

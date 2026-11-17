@@ -1,29 +1,15 @@
-"""The Victron GATT protocol: record stream, requests and the registers (VREGs) we decode.
+"""The registers (VREGs) read over GATT and how to decode them.
 
-Reverse engineered, see docs/gatt-protocol.md and docs/unknowns.md. The service
-``306b0001-b081-4037-83dc-e59fcc3cdfd0`` has three characteristics, which we call 0021
-(control, also carries the ``f901`` acknowledgements), 0024 and 0027 (data). Data is a
-byte stream of records::
-
-    [kind] [ctx] [CBOR register id] [CBOR value]     kind 0x07, 0x08, 0x09
-    [kind] [CBOR item]                               kind 0x02 (handshake answer)
-
-kind 0x08 carries a value (a CBOR byte string), 0x09 an answer with an error code, 0x07 a
-status. ``ctx`` 0 is a plain request, 3 a subscription. Requests have the same shape: kind 0x05
-(get) or 0x06 (set), ``ctx``, then a CBOR array: ``05 00 81 19 ec65`` gets register 0xEC65,
-``06 00 82 18 93 42 10 27`` sets register 0x93 to ``10 27`` (the keepalive). A record may be
-split across notifications or writes, and several records may share one notification.
+The protocol that carries them is in ``vesmart.py``. Register ids, types and scales are those of
+Victron's VE.Direct HEX protocol and of the register dictionary inside VictronConnect.
 """
 
 from __future__ import annotations
 
-import io
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
-
-import cbor2
 
 from smartsolar.errors import InvalidWriteError
 from smartsolar.reading import Value
@@ -32,131 +18,13 @@ log = logging.getLogger(__name__)
 
 SERVICE_UUID = "306b0001-b081-4037-83dc-e59fcc3cdfd0"
 CHAR_UUIDS = {
-    "0021": "306b0002-b081-4037-83dc-e59fcc3cdfd0",
-    "0024": "306b0003-b081-4037-83dc-e59fcc3cdfd0",
-    "0027": "306b0004-b081-4037-83dc-e59fcc3cdfd0",
+    "0021": "306b0002-b081-4037-83dc-e59fcc3cdfd0",  # control
+    "0024": "306b0003-b081-4037-83dc-e59fcc3cdfd0",  # lastData
+    "0027": "306b0004-b081-4037-83dc-e59fcc3cdfd0",  # data
 }
 
-VREG_KEY = 0xEC65  # the Instant Readout encryption key
-VREG_MAC = 0xEC66
-VREG_KEEPALIVE = 0x93  # set to 0x2710 by the ping: the device closes the link 10 s after the last one
-
-PING = bytes.fromhex("0600821893421027")
-
-# What VictronConnect sends to get data going (captured with a Bluetooth trace). Only the
-# first part is the handshake; the rest asks for the key, MAC and the subscriptions.
-INIT_SEQUENCE: tuple[tuple[str, str], ...] = (
-    ("0021", "fa80ff"),
-    ("0021", "f980"),
-    ("0024", "01"),
-    ("0024", "0300"),
-    ("0024", "0600821893421027" + "05008219ec6619ec65" + "03010303"),
-    ("0024", "05008119010d" + "05008119ec7d" + "0500811890" + "05008119ec3f" + "05008119ec12"),
-    ("0024", "050181190100" + "050181190100"),
-    (
-        "0027",
-        "05018119ec7d" + "0501811890" + "05018119ec3f" + "05018119ec12" + "050381190102" + "05038119ed8c" + "05038119edec"
-        + "050381192211" + "050381192212" + "05038119eda8" + "0600821893421027" + "05038119eda905",
-    ),
-    ("0024", "038119edac"),
-    ("0021", "f941"),
-)
-
-
-CTX_DATA = 3  # the context in which registers can be read and written (0 and 1 only answer for a few static ones)
-
-
-def get_request(*vregs: int, ctx: int = CTX_DATA) -> bytes:
-    """``[0x05][ctx][CBOR array of register ids]``: read registers."""
-    return bytes([0x05, ctx]) + cbor2.dumps(list(vregs))
-
-
-def set_request(vreg: int, value: bytes, ctx: int = CTX_DATA) -> bytes:
-    """``[0x06][ctx][CBOR array [register id, byte string]]``: write a register (little-endian bytes).
-
-    The device answers with a value record that echoes the value it stored. A write it does not
-    accept (a read-only register, for example) gets no answer at all.
-    """
-    return bytes([0x06, ctx]) + cbor2.dumps([vreg, value])
-
-
-def parse_requests(data: bytes) -> list[tuple[int, int, list[Any]]]:
-    """Split complete requests (kind, ctx, array items) out of written bytes. For tests and fakes."""
-    out = []
-    stream = io.BytesIO(data)
-    while stream.tell() < len(data):
-        kind, ctx = data[stream.tell()], data[stream.tell() + 1]
-        stream.seek(stream.tell() + 2)
-        out.append((kind, ctx, cbor2.CBORDecoder(stream).decode()))
-    return out
-
-
-@dataclass(frozen=True)
-class Record:
-    kind: int
-    ctx: int | None
-    vreg: int | None
-    value: Any
-
-
-class RecordParser:
-    """Turns the notification chunks of one characteristic into records."""
-
-    def __init__(self) -> None:
-        self._buffer = b""
-        self.dropped = 0  # bytes that could not be understood
-
-    def feed(self, chunk: bytes) -> list[Record]:
-        data = self._buffer + chunk
-        self._buffer = b""
-        records: list[Record] = []
-        pos = 0
-        while pos < len(data):
-            record, used = self._one(data, pos)
-            if record is None and used == 0:  # incomplete: keep the rest for the next chunk
-                self._buffer = data[pos:]
-                break
-            if record is None:
-                self.dropped += used
-                log.debug("Dropping unparsable GATT bytes %s", data[pos : pos + used].hex())
-            else:
-                records.append(record)
-            pos += used
-        return records
-
-    @staticmethod
-    def _cbor(stream: io.BytesIO) -> Any:
-        return cbor2.CBORDecoder(stream).decode()
-
-    def _one(self, data: bytes, pos: int) -> tuple[Record | None, int]:
-        """Parse one record at ``pos``: (record, bytes used); (None, 0) = incomplete; (None, n) = skip n."""
-        kind = data[pos]
-        if kind == 0x02:
-            body = io.BytesIO(data[pos + 1 :])
-            try:
-                value = self._cbor(body)
-            except (cbor2.CBORDecodeEOF, EOFError):
-                return None, 0
-            except cbor2.CBORDecodeError:
-                return None, len(data) - pos
-            return Record(kind, None, None, value), 1 + body.tell()
-        if kind in (0x07, 0x08, 0x09):
-            if pos + 1 >= len(data):
-                return None, 0
-            ctx = data[pos + 1]
-            body = io.BytesIO(data[pos + 2 :])
-            try:
-                vreg = self._cbor(body)
-                value = self._cbor(body)
-            except (cbor2.CBORDecodeEOF, EOFError):
-                return None, 0
-            except cbor2.CBORDecodeError:
-                return None, len(data) - pos
-            if not isinstance(vreg, int):
-                return None, len(data) - pos
-            return Record(kind, ctx, vreg, value), 2 + body.tell()
-        # An unknown record kind: we cannot know its length, so the rest of the chunk is lost.
-        return None, len(data) - pos
+VREG_KEY = 0xEC65  # the Instant Readout encryption key (instance 0)
+VREG_MAC = 0xEC66  # instance 0
 
 
 # -- registers ------------------------------------------------------------------------
@@ -190,9 +58,11 @@ def _unsigned(scale: float = 1.0, na: int | None = None, ndigits: int = 2) -> Ca
     return decode
 
 
-def _signed(scale: float = 1.0, ndigits: int = 2) -> Callable[[Any], Any]:
+def _signed(scale: float = 1.0, na: int | None = None, ndigits: int = 2) -> Callable[[Any], Any]:
     def decode(raw: Any) -> Any:
         number = int.from_bytes(_bytes(raw), "little", signed=True)
+        if na is not None and number == na:
+            return None
         return number if scale == 1.0 else round(number * scale, ndigits)
 
     return decode
@@ -255,7 +125,7 @@ VREGS: dict[int, Vreg] = {
         Vreg(0xEDDB, "charger_temperature", "Charger temperature", "°C", _signed(0.01), verified=False),
         Vreg(0xEDBB, "panel_voltage", "Panel voltage", "V", _unsigned(0.01)),
         Vreg(0xEDBC, "panel_power", "Panel power", "W", _unsigned(0.01), verified=False),
-        Vreg(0xED8D, "channel_1_voltage", "Channel 1 voltage", "V", _unsigned(0.01)),
+        Vreg(0xED8D, "channel_1_voltage", "Channel 1 voltage", "V", _signed(0.01)),
         Vreg(0xED8F, "channel_1_current", "Channel 1 current", "A", _signed(0.1), verified=False),
         Vreg(0xEDA8, "load_output_status", "Load output status", "", _unsigned()),
         Vreg(0xEDA9, "load_output_voltage", "Load output voltage", "V", _unsigned(0.01)),
@@ -268,8 +138,8 @@ VREGS: dict[int, Vreg] = {
     )
 }
 
-# Registers that are read (ctx 3) at every poll and every hold publish. The device pushes a few
-# others by itself (uptime, channel 1 voltage, load output, ...).
+# Registers that are read at every poll and every hold publish. The device pushes the ones that
+# change by itself (panel voltage and power, channel 1 voltage and current, load output, ...).
 _POLLED_BASE: tuple[int, ...] = (
     0x0200, 0x0201, 0xEDDA, 0xEDD5, 0xEDD7, 0xEDD3, 0xEDD2, 0xEDD1, 0xEDD0, 0xEDDC, 0xEDDB,
     0xEDBB, 0xEDBC, 0xEDAD, 0xEDEF,
@@ -301,10 +171,10 @@ def _register_settings() -> None:
 
 
 def vreg_table() -> list[dict[str, Any]]:
-    return [
-        {"id": f"0x{v.id:04x}", "name": v.name, "friendly": v.friendly, "unit": v.unit, "verified": v.verified}
-        for v in sorted(VREGS.values(), key=lambda v: v.id)
-    ]
+    """Every published register, a history record with one row per value."""
+    rows = [{"id": f"0x{v.id:04x}", "name": v.name, "friendly": v.friendly, "unit": v.unit, "verified": v.verified} for v in VREGS.values()]
+    rows += [{"id": f"0x{r.id:04x}", "name": f.name, "friendly": f.friendly, "unit": f.unit, "verified": True} for r in RECORDS.values() for f in r.fields]
+    return sorted(rows, key=lambda row: row["id"])
 
 
 # -- settings: registers that can be read, written and imported from a VictronConnect file ------
@@ -472,7 +342,7 @@ PROFILE_CONTEXT_VREGS = (VREG_PRODUCT_ID, VREG_FIRMWARE, VREG_BATTERY_VOLTAGE_AC
 
 
 def product_id(raw: Any) -> int | None:
-    """The product id of register 0x0100: byte 0 is the instance, bytes 1 and 2 the id (little endian)."""
+    """The product id of register 0x0100: byte 0 is an identifier, bytes 1 and 2 the id (little endian), byte 3 flags."""
     data = _bytes(raw)
     return int.from_bytes(data[1:3], "little") if len(data) >= 3 else None
 
@@ -543,4 +413,116 @@ def writable_table() -> list[dict[str, Any]]:
 
 
 _register_settings()
-POLLED_VREGS: tuple[int, ...] = tuple(dict.fromkeys(_POLLED_BASE + tuple(w.vreg for w in WRITABLE.values())))
+
+
+# -- more registers the SmartSolar pushes ------------------------------------------------
+# Added after the settings: their columns come after all others, so the positions in the CBOR
+# array of the older columns stay the same. Names, types and scales were checked against the
+# register dictionary in VictronConnect.
+
+BLE_MODES = {0: "disabled", 1: "enabled"}
+
+for _v in (
+    Vreg(0xED8C, "channel_1_current_ma", "Channel 1 current, in mA", "mA", _signed(na=0x7FFFFFFF)),
+    Vreg(0xEC8A, "pv_power_trend", "PV power for the trend graphs (1 W)", "W", _unsigned(na=0xFFFF)),
+    Vreg(0xEC89, "load_current_trend", "Load output current for the trend graphs (0.1 A)", "A", _unsigned(0.1, na=0xFF)),
+    Vreg(0x0202, "remote_control_used", "Remote control flags (bit 1: remote on/off)", "", _unsigned()),
+    Vreg(0x0090, "ble_mode", "Bluetooth mode", "", _enum(BLE_MODES)),
+    Vreg(0x0150, "ble_capabilities", "Bluetooth capability flags", "", _unsigned()),
+):
+    VREGS[_v.id] = _v
+
+
+@dataclass(frozen=True)
+class RecordField:
+    name: str
+    friendly: str
+    unit: str
+    offset: int  # after the version byte
+    width: int  # bytes, little endian; 4 for the error list
+    scale: float = 1.0
+    min_version: int = 0
+    errors: bool = False  # four error codes, published as "e1,e2,e3,e4"
+
+
+@dataclass(frozen=True)
+class HistoryRecord:
+    """A history register: a version byte, then fields; one register gives several values.
+
+    Unknown fields are all ones (0xFF, 0xFFFF, ...) and published as null; version 255 is an unknown record.
+    The values that other registers already give (the user yield in 0xEDDC, yield and maximum power of
+    today in 0xEDD3 and 0xEDD2) are not taken from the record again.
+    """
+
+    id: int
+    name: str
+    fields: tuple[RecordField, ...]
+
+    def decode(self, raw: Any) -> list[Value]:
+        data = _bytes(raw)
+        if not data or data[0] == 0xFF:
+            return []
+        version, body = data[0], data[1:]
+        values = []
+        for f in self.fields:
+            if version < f.min_version or len(body) < f.offset + f.width:
+                continue
+            part = body[f.offset : f.offset + f.width]
+            if f.errors:
+                value: Any = ",".join(str(b) for b in part)
+            else:
+                number = int.from_bytes(part, "little")
+                value = None if number == (1 << (8 * f.width)) - 1 else (number if f.scale == 1.0 else round(number * f.scale, 2))
+            values.append(Value(f.name, f.friendly, f.unit, value))
+        return values
+
+
+RECORDS: dict[int, HistoryRecord] = {
+    r.id: r
+    for r in (
+        # version 0/1: database, 4 errors, user yield, system yield, PV max, battery max, days [, battery min]
+        HistoryRecord(0x104F, "history_total", (
+            RecordField("errors_total", "Last four error codes, all time", "", 1, 4, errors=True),
+            RecordField("yield_system_total", "Yield total, not resettable", "kWh", 9, 4, 0.01),
+            RecordField("panel_voltage_max_total", "Maximum panel voltage, all time", "V", 13, 2, 0.01),
+            RecordField("battery_voltage_max_total", "Maximum battery voltage, all time", "V", 15, 2, 0.01),
+            RecordField("history_days", "Days in the history", "", 17, 1),
+            RecordField("battery_voltage_min_total", "Minimum battery voltage, all time", "V", 18, 2, 0.01, min_version=1),
+        )),
+        # version 0: yield, consumed, battery max/min, database, 4 errors, time in bulk/absorption/float,
+        # maximum power, maximum battery current, PV max, day sequence number
+        HistoryRecord(0x1050, "history_today", (
+            RecordField("consumed_today", "Load output consumption today", "kWh", 4, 4, 0.01),
+            RecordField("battery_voltage_max_today", "Maximum battery voltage today", "V", 8, 2, 0.01),
+            RecordField("battery_voltage_min_today", "Minimum battery voltage today", "V", 10, 2, 0.01),
+            RecordField("errors_today", "Last four error codes today", "", 13, 4, errors=True),
+            RecordField("time_bulk_today", "Time in bulk today", "min", 17, 2),
+            RecordField("time_absorption_today", "Time in absorption today", "min", 19, 2),
+            RecordField("time_float_today", "Time in float today", "min", 21, 2),
+            RecordField("battery_current_max_today", "Maximum battery current today", "A", 27, 2, 0.1),
+            RecordField("panel_voltage_max_today", "Maximum panel voltage today", "V", 29, 2, 0.01),
+            RecordField("day_sequence", "Day sequence number", "", 31, 2),
+        )),
+    )
+}
+
+
+def decode_values(vreg: int, raw: Any) -> list[Value]:
+    """All values of a register: one for a plain register, several for a history record, none for the key."""
+    record = RECORDS.get(vreg)
+    if record is not None:
+        try:
+            return record.decode(raw)
+        except (ValueError, TypeError):
+            return []
+    value = decode_vreg(vreg, raw)
+    return [value] if value is not None else []
+
+
+def known_vreg(vreg: int) -> bool:
+    return vreg in VREGS or vreg in RECORDS
+
+
+POLLED_VREGS: tuple[int, ...] = tuple(
+    dict.fromkeys(_POLLED_BASE + tuple(w.vreg for w in WRITABLE.values()) + (0xED8C, 0x0202, 0x0090, 0x0150) + tuple(RECORDS))
+)

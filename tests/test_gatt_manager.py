@@ -306,12 +306,12 @@ def test_stop_closes_an_open_link():
 def test_unknown_registers_are_only_available_raw():
     async def go():
         backend = FakeBackend()
-        backend.values[0xED8C] = bytes.fromhex("d8ffffff")
+        backend.values[0xEC8B] = bytes.fromhex("d8ffffff")
         async with Rig("poll", backend=backend) as rig:
             await until(lambda: rig.readings)
-            assert "vreg_ed8c" not in {v.name for v in rig.readings[0].values}
+            assert "vreg_ec8b" not in {v.name for v in rig.readings[0].values}
             raw = rig.mgr.raw_registers()  # still there after the session closed
-            assert raw["0xed8c"] == "d8ffffff" and raw["0xed8d"] == "3305"
+            assert raw["0xec8b"] == "d8ffffff" and raw["0xed8d"] == "3305"
             assert "0xec65" not in raw and TEST_KEY.hex() not in str(raw)
 
     run(go())
@@ -389,14 +389,14 @@ def test_a_write_the_device_reads_back_differently_is_reported():
         async with Rig("hold", backend=backend) as rig:
             await until(lambda: rig.mgr.state is GattState.CONNECTED)
             link = backend.links[0]
-            original = link._answer_requests
+            original = link._handle
 
-            def clamp(data):  # the device stores another value than the one it echoes
-                original(data)
+            def clamp(message):  # the device stores another value than the one it echoes
+                original(message)
                 if backend.set_log and backend.set_log[-1][0] == 0xEDF6:
                     backend.registers[0xEDF6] = bytes.fromhex("4605")
 
-            link._answer_requests = clamp
+            link._handle = clamp
             with pytest.raises(WriteFailed, match="reports 13.5"):
                 await asyncio.wait_for(rig.mgr.request_write(build_write({"float_voltage": 13.6})), 5.0)
             assert [e.data["ok"] for e in rig.events if e.kind == "register_written"] == [False]
@@ -453,5 +453,17 @@ def test_mode_off_holds_a_device_without_instant_readout_in_the_fallback_mode():
         assert rig.mgr.mode == "off"
         rig = Rig("poll", readout_off={A})  # a configured mode wins
         assert rig.mgr.mode == "poll"
+
+    run(go())
+
+
+def test_a_history_record_is_published_as_several_values():
+    async def go():
+        backend = FakeBackend()
+        backend.values[0x1050] = bytes.fromhex("000300000012000000220513050000000000ea0000000000130000000e00040c2101")
+        async with Rig("poll", backend=backend) as rig:
+            await until(lambda: rig.readings)
+            values = {v.name: v.value for v in rig.readings[0].values}
+            assert values["time_bulk_today"] == 234 and values["day_sequence"] == 289 and values["consumed_today"] == 0.18
 
     run(go())

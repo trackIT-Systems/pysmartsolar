@@ -114,6 +114,12 @@ class BleakLink:
             except Exception as exc:
                 raise LinkError(f"cannot enable notifications on {name}: {type(exc).__name__}: {exc}") from exc
 
+    async def read(self, char: str) -> bytes:
+        try:
+            return bytes(await self._client.read_gatt_char(CHAR_UUIDS[char]))
+        except (BleakError, EOFError, OSError) as exc:
+            raise map_write_error(exc, self.is_connected) from exc
+
     async def write(self, char: str, data: bytes) -> None:
         try:
             await self._client.write_gatt_char(CHAR_UUIDS[char], data, response=False)

@@ -2,38 +2,18 @@
 
 What is sent or accepted without being understood, so nobody has to rediscover that it is a guess.
 
-## GATT handshake (replayed from a VictronConnect trace)
+## GATT (VE.Smart)
 
-| Where | Bytes | What we know |
-|---|---|---|
-| control `0021` | `fa80ff` | sent first; meaning unknown |
-| control `0021` | `f980` | meaning unknown |
-| control `0021` | `f941` | sent last; the device starts pushing values after it |
-| control `0021` (device) | `f901` | the device's acknowledgement of every control write |
-| data `0024` | `01` | meaning unknown |
-| data `0024` | `0300` | meaning unknown |
+The handshake that used to be replayed from a VictronConnect trace is understood now ([gatt-protocol.md](gatt-protocol.md)): `fa80ff` opens the transport, `f9 n` is flow control (`f980` allows the device 0x80 chunks, `f941` gives 65 back, `f901` is the device allowing one more), `01` asks for the device list, `03 i` subscribes to instance `i`, and the "context" byte is the instance. Still open:
 
-The whole sequence is `INIT_SEQUENCE` in `vreg.py`. **It is not known which parts are required.** The probe script (not in the repo) had `full`, `short` and `none` modes, but no result was recorded. A bisection on the device (drop parts, see whether the link and reads still work) would turn this into a list of what is needed.
-
-## Init requests whose purpose is unknown
-
-Inside the init sequence (the bytes are in `INIT_SEQUENCE`):
-
-* On `0024`, in the same write as the ping and the key/MAC request (`05 00 82 19 ec66 19 ec65`, context 0), four bytes **`03 01 03 03`**: a kind `03` item whose meaning is unknown.
-* Requests in **context 0** for `0x010D`, `0x0090`, `0xEC3F`, `0xEC12` and `0xEC7D`, the same four in **context 1** (`0xEC7D`, `0x0090`, `0xEC3F`, `0xEC12`) on `0027`, and `0x0100` twice in context 1. Their answers are not used; what the registers hold is unknown.
-* A request of **kind `03`** on its own: `03 81 19 ed ac` (register `0xEDAC`).
-* A trailing **`05`** after `05 03 81 19 ed a9` (`...eda905`).
-* Context 3 requests for `0x0102`, `0xED8C`, `0xEDEC`, `0x2211`, `0x2212` and `0xEDA8` (copied; only the answers are used, they work as plain reads too).
-
-## Contexts
-
-Context 3 is the one where reads and writes work. Contexts 0 and 1 answer only a few static registers. What the context byte selects is not known.
-
-## Record kinds
-
-* `0x07` ("status") and `0x02` (handshake answer) are parsed and ignored.
-* Several registers answered with `09 ... 01` in some contexts (`0xEDD5`, `0xEDD7`, `0xEDD3`, `0xEDBB`/`0xEDBC`, `0x0201`) although they exist (they answer in context 3). Why the standalone request fails is unknown.
-* The meaning of the error code `01` in `09` records is a guess (not available).
+* The meaning of `FA 80 FF` beyond "open"; VictronConnect sends these constant bytes.
+* The `flags` byte of the parameters (0 on the SmartSolar).
+* After the parameters, VictronConnect queues a `SetValues` of register 0 with `maxAttLength - 6` zero bytes when `maxAttLength` is more than 29, equals `chunkSize` and `maxFreeChunks` is more than 1 (a check of the ATT length?). The SmartSolar does not meet the condition; the daemon does not send it.
+* Instance 1 (product id `0xFE00`) of the SmartSolar answers only `0x0100`.
+* Error codes after `F7` and the result codes of `Response` and `ValueResponse` other than 0 and 1.
+* Whether a device closes a link that never got a keepalive.
+* A refused write (a read-only register) still gets no answer at all; whether a `Response` comes for other refusals is not known.
+* Firmware older than 1.64 (pysmartsolar#6, `dev-vhftest-02`) was not tried with VE.Smart yet.
 
 ## Advertisements
 

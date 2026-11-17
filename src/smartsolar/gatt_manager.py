@@ -4,7 +4,7 @@
 
 * ``off``: connects only when the Instant Readout key of the selected device is unknown, reads
   it (register 0xEC65), stores it and disconnects.
-* ``hold``: keeps one connection open (with the keepalive ping) and publishes the values the
+* ``hold``: keeps one connection open (with the keepalive) and publishes the values the
   device pushes.
 * ``poll``: connects every ``poll_interval_s``, collects the values, publishes them and disconnects.
 
@@ -32,21 +32,23 @@ from smartsolar.backoff import Backoff
 from smartsolar.errors import ConnectError, NoDataError, NotConnectedError, ProtocolError, SmartsolarError, WriteFailed
 from smartsolar.failures import Failures
 from smartsolar.gatt_session import GattSession
+from smartsolar.instant import parse_model
 from smartsolar.reading import Event, Reading, device_id
 from smartsolar.registers import check_write, write_result
 from smartsolar.state import GattStats
 from smartsolar.vreg import (
     POLLED_VREGS,
     VREG_KEY,
-    VREGS,
     WriteItem,
-    decode_vreg,
+    decode_values,
+    known_vreg,
 )
 
 log = logging.getLogger(__name__)
 
-# Registers that arrive in the first seconds of a session; a poll is complete once they are in.
-EXPECTED_VREGS = (0x0102, 0xEC5A, 0xEC66, 0xED8D, 0xEDA9)
+# Registers that are in the first seconds of a session (product id and firmware are read when it starts,
+# the device pushes the battery voltage); a poll is complete once they are in.
+EXPECTED_VREGS = (0x0100, 0x0102, 0xED8D)
 MIN_COLLECT_S = 1.0
 STABLE_AFTER_S = 60.0
 CONNECT_GRACE_S = 10.0
@@ -187,9 +189,8 @@ class GattManager:
         self._last_raw = self._raw(session)
         values = []
         for vreg in sorted(session.values):
-            value = decode_vreg(vreg, session.values[vreg]) if vreg in VREGS else None
-            if value is not None:
-                values.append(value)
+            if known_vreg(vreg):
+                values += decode_values(vreg, session.values[vreg])
         return Reading(device_id(device.address, device.name), "gatt", datetime.now().astimezone(), tuple(values))
 
     @staticmethod
@@ -283,7 +284,7 @@ class GattManager:
                     self._paired.add(adv.address)
                     self.stats.pairings += 1
                     self._event("paired", adv.address)
-                session = GattSession(link, keepalive_s=self.cfg.keepalive_s)
+                session = GattSession(link, keepalive_s=self.cfg.keepalive_s, model=parse_model(adv.data))
                 self.session = session
                 self.device = adv
                 await self._until_stop(session.start())

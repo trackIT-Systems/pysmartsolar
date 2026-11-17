@@ -2,11 +2,12 @@ import asyncio
 import gc
 
 import pytest
+from fakes import TEST_KEY, A, FakeBackend, FakeLink, run, until
 
-from fakes import A, TEST_KEY, FakeBackend, FakeLink, run, until
 from smartsolar.errors import NotConnectedError, ProtocolError, WriteFailed
 from smartsolar.gatt_session import GattSession
-from smartsolar.vreg import INIT_SEQUENCE, VREG_KEY
+from smartsolar.vesmart import Op
+from smartsolar.vreg import VREG_KEY
 
 
 async def open_session(backend=None, keepalive_s=0.05):
@@ -17,24 +18,40 @@ async def open_session(backend=None, keepalive_s=0.05):
     return backend, link, session, lost
 
 
-def test_start_sends_the_init_sequence_in_order():
+def test_start_opens_the_transport_subscribes_and_finds_the_charger():
     async def go():
         _, link, session, _ = await open_session(keepalive_s=0)
         await session.start()
-        assert link.writes == [(c, bytes.fromhex(h)) for c, h in INIT_SEQUENCE]
+        assert link.writes[:2] == [("0021", bytes.fromhex("fa80ff")), ("0021", bytes.fromhex("f980"))]
+        assert [m.op for m in link.messages[:4]] == [Op.GET_DEVICES, Op.SUBSCRIBE, Op.SUBSCRIBE, Op.SUBSCRIBE]
+        assert session.devices == [(0, 0), (1, 0), (3, 1)] and link.subscribed == [0, 1, 3]
+        assert session.instance == 3 and session.product_ids == {0: 0xA197, 3: 0xA053}
+        assert link.credit_violations == 0 and link.pings == 0  # no keepalive asked for
         await session.close()
 
     run(go())
 
 
-def test_values_arrive_across_split_notifications_and_acks_are_counted():
+def test_the_advertised_model_picks_the_instance():
+    async def go():
+        backend, link, _, _ = await open_session()
+        session = GattSession(link, keepalive_s=0, model=0xA197)
+        await session.start()
+        assert session.instance == 0
+        await session.close()
+
+    run(go())
+
+
+def test_pushed_values_arrive_with_the_mac_of_the_bluetooth_part():
     async def go():
         _, link, session, _ = await open_session(keepalive_s=0)
         await session.start()
         await until(lambda: 0xED8D in session.values)
         assert session.values[0xED8D] == (1331).to_bytes(2, "little")
-        assert session.values[0xEC66] == bytes.fromhex("f748188a779d")
-        assert session.acks >= len(INIT_SEQUENCE) - 1
+        assert session.values[0x0100] == bytes.fromhex("0053a0fe")  # of the charger, not of instance 0
+        link.push(0xED8D, (1400).to_bytes(2, "little"))
+        await until(lambda: session.values[0xED8D] == (1400).to_bytes(2, "little"))
         assert session.errors == {}
         await session.close()
 
@@ -118,18 +135,18 @@ def test_a_lost_link_wakes_waiters():
     run(go())
 
 
-def test_error_records_are_kept_apart_from_values():
+def test_error_answers_are_kept_apart_from_values():
     async def go():
         _, _, session, _ = await open_session(keepalive_s=0)
-        session._on_notify("0024", bytes.fromhex("090019edd501"))
-        session._on_notify("0021", bytes.fromhex("f901"))
-        session._on_notify("0021", bytes.fromhex("1234"))  # other bytes on the control characteristic are ignored
-        assert session.errors == {0xEDD5: 1} and session.values == {} and session.acks == 1
+        await session.start()
+        session.transport.feed("0024", bytes.fromhex("090319edd501"))
+        assert session.errors == {0xEDD5: 1} and 0xEDD5 not in session.values
+        await session.close()
 
     run(go())
 
 
-def test_request_reads_a_register_after_the_init_sequence():
+def test_request_reads_a_register_of_the_charger():
     async def go():
         backend, link, session, _ = await open_session(keepalive_s=0)
         await session.start()

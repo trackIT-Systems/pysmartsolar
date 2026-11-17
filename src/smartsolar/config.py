@@ -46,7 +46,7 @@ class GattConfig:
     passkey: str = "000000"
     poll_interval_s: float = 900.0
     collect_s: float = 15.0
-    keepalive_s: float = 5.0
+    keepalive_s: float = 3.0
     connect_timeout_s: float = 30.0
     pair_timeout_s: float = 20.0
     request_timeout_s: float = 10.0

@@ -1,16 +1,11 @@
 import pytest
 
-from smartsolar import daemon, gatt_manager, gatt_session
+from smartsolar import daemon, gatt_manager
 
 
 @pytest.fixture(autouse=True)
 def fast_collect(monkeypatch):
     monkeypatch.setattr(gatt_manager, "MIN_COLLECT_S", 0.05)
-
-
-@pytest.fixture(autouse=True)
-def fast_init(monkeypatch):
-    monkeypatch.setattr(gatt_session, "INIT_WRITE_GAP_S", 0.0)
 
 
 @pytest.fixture(autouse=True)
