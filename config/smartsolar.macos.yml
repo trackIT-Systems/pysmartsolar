@@ -54,6 +54,7 @@ serial:
   publish_interval_s: 60
   stale_after_s: 10
   hex: true                      # false: read only, the daemon never sends a byte
+  registers_interval_s: 60       # read the settings, history, ... over HEX too (a request can cut a text block); 0: never
   request_timeout_s: 2
   reopen_initial_s: 2
   reopen_max_s: 60

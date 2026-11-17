@@ -9,8 +9,9 @@ columns:
 * names that mean the same value map to one column (``ALIASES``);
 * each column has one unit; a value in another unit is converted (``CONVERSIONS``).
 
-Measurements come first (``LEADING``), then the remaining values in table order.
-A reading lacking a value has null in its column.
+Measurements come first (``LEADING``), then the remaining values in table order,
+then the columns added later (``TRAILING``), so that a CBOR array keeps the
+positions of the older ones. A reading lacking a value has null in its column.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from typing import Any
 from smartsolar.reading import Reading
 from smartsolar.tracker import ADVERT_FIELDS
 from smartsolar.vedirect import TEXT_FIELDS
-from smartsolar.vreg import RECORDS, VREGS
+from smartsolar.vreg import DERIVED, RECORDS, VREGS
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +66,37 @@ LEADING = (
     "device_mode",
 )
 
+# Columns added after the first release, in the order they were added: always last. Append new ones.
+TRAILING = (
+    "channel_1_current_ma",
+    "pv_power_trend",
+    "load_current_trend",
+    "remote_control_used",
+    "ble_mode",
+    "ble_capabilities",
+    "errors_total",
+    "yield_system_total",
+    "panel_voltage_max_total",
+    "battery_voltage_max_total",
+    "history_days",
+    "battery_voltage_min_total",
+    "consumed_today",
+    "battery_voltage_max_today",
+    "battery_voltage_min_today",
+    "errors_today",
+    "time_bulk_today",
+    "time_absorption_today",
+    "time_float_today",
+    "battery_current_max_today",
+    "panel_voltage_max_today",
+    "instant_readout",
+    "custom_name",
+    "bms_present",
+    "identify",
+    "charge_current",
+    "trend_time_reference",
+)
+
 
 def _sources() -> list[tuple[str, str, str, str]]:
     """(source, name, description, unit) of every value of every source table."""
@@ -72,6 +104,7 @@ def _sources() -> list[tuple[str, str, str, str]]:
     sources += [("vedirect", f.name, f.friendly, f.unit) for f in TEXT_FIELDS]
     sources += [("gatt", v.name, v.friendly, v.unit) for v in VREGS.values()]
     sources += [("gatt", f.name, f.friendly, f.unit) for r in RECORDS.values() for f in r.fields]
+    sources += [("gatt", v.name, v.friendly, v.unit) for v in DERIVED.values()]
     return sources
 
 
@@ -87,7 +120,7 @@ def _columns() -> tuple[tuple[str, ...], dict[str, str], dict[str, str], dict[st
         units.setdefault(column, COLUMN_UNITS.get(column, unit))
         descriptions.setdefault(column, friendly)
         origins.setdefault(column, set()).add(source)
-    ordered = tuple(LEADING) + tuple(n for n in names if n not in LEADING)
+    ordered = tuple(LEADING) + tuple(n for n in names if n not in LEADING and n not in TRAILING) + TRAILING
     return ordered, units, descriptions, origins
 
 

@@ -18,7 +18,7 @@ failure   {"id": 1, "ok": false, "error": {"type": "no_data", "message": "..."}}
 
 * `id` is any JSON value; the daemon echoes it. `args` is optional (an object).
 * A connection can carry several requests, answered in order, one at a time. The daemon closes a connection that is idle for 30 s. A request line may be at most 64 KB (`bad_request` if longer), a response can be up to 16 MB (`read --raw` is the largest).
-* Some commands take long (see below): a client should wait minutes, not seconds. The CLI waits 180 to 300 s for `write`, `settings` and `fetch_key`.
+* Some commands take long (see below): a client should wait minutes, not seconds. The CLI waits 180 to 300 s for `write`, `settings`, `history` and `fetch_key`.
 * Invalid JSON, a missing `cmd` or `args` that is not an object give `bad_request`; an unknown command `unknown_command`.
 
 From a shell: `echo '{"cmd":"status"}' | socat - UNIX-CONNECT:/run/smartsolar/smartsolar.sock`. From Python, `smartsolar.ipc.request(socket, cmd, args, timeout=60)` returns the `result` or raises `DaemonError` (with `.type` and `.message`) or `DaemonUnreachable`.
@@ -125,6 +125,19 @@ No arguments. Drops the GATT connection and connects again. Returns `{"requested
 ```
 
 `product_id` is the number (`0xA053` is 41043) and `firmware` the version as VictronConnect shows it (`0x0164` is 356, i.e. 1.64); either can be `null`. Settings this model or firmware does not have are left out. `via` says which way answered.
+
+### `history`
+
+`{"days": 30, "via": "auto" | "serial" | "gatt"}`. The charger's day records, read live like `settings`: today (`"day": 0`) and up to 30 days before (`-1` is yesterday). Days the charger has no record for are left out.
+
+```json
+{"device": "HQ00000TEST", "via": "serial",
+ "days": [{"day": -1, "yield": 0.22, "consumed": 0.32, "max_power": 211, "battery_voltage_min": 12.98, "battery_voltage_max": 13.76,
+           "battery_current_max": 15.0, "panel_voltage_max": 35.89, "time_bulk": 534, "time_absorption": 0, "time_float": 0,
+           "errors": "0,0,0,0", "day_sequence": 245}, ...]}
+```
+
+Units: kWh, W, V, A and minutes; `errors` are the last four charger error codes of the day.
 
 ### `write`
 

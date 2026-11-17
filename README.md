@@ -80,6 +80,7 @@ smartsolar rescan                  choose the device again now
 smartsolar reconnect               drop the GATT connection and connect again
 smartsolar write NAME=VALUE ... [--via serial|gatt]   change settings over the cable or GATT (see Writing)
 smartsolar profile show|diff|load|save FILE.vcsf   VictronConnect settings files (see Profiles)
+smartsolar history [--days N] [--via serial|gatt]   the charger's day records: today and up to 30 days before
 smartsolar fetch-key [--show]      read the Instant Readout key over GATT now
 smartsolar decode --key HEX DATA   decode one advertisement offline
 smartsolar vregs [--writable]      the registers decoded over GATT, or the ones `write` can change
@@ -110,6 +111,10 @@ smartsolar vregs --writable
 | `load_output_control` | `off`, `batterylife`, `conventional1`, `conventional2`, `on`, `user1`, `user2`, `aes` (`alt1`, `alt2` are old names) |
 | `load_user_high_voltage`, `load_user_low_voltage`, `load_aes_timer` | V, V, minutes |
 | `rx_port_function`, `tx_port_function` | the VE.Direct port functions |
+| `instant_readout` | `on`, `off`: whether the advertisements carry the encrypted live data. A setting of the Bluetooth part, so only over GATT (`auto` takes GATT for it) |
+| `custom_name` | text, up to 80 bytes UTF-8: the name VictronConnect shows |
+| `bms_present` | `absent`, `present` (the charger sets `present` itself when it sees a BMS) |
+| `identify` | `on`, `off`: the charger blinks its LEDs until set `off` again |
 
 It asks for confirmation on a terminal (`--yes` skips it, and is required without one). Every write is checked twice: the device must echo the value, and a read-back must show it. A write the device does not accept gets **no answer at all**, which is reported as a failure. The old and the new value are shown, and every write is logged as a `register_written` event (CSV and MQTT). Exit code 1 if a write failed or the read-back differs.
 
@@ -117,7 +122,7 @@ It asks for confirmation on a terminal (`--yes` skips it, and is required withou
 
 `load_output_control` is the load output algorithm of the VictronConnect load output settings: `batterylife` is the self-adapting default, `conventional1` switches off below 11.1 V and on above 13.1 V, `conventional2` below 11.8 V and above 14.0 V (12 V system; multiplied for 24 V and 48 V), `on` and `off` are always on and always off, and `user1`, `user2` and `aes` (Automatic Energy Selector) use `load_user_high_voltage` and `load_user_low_voltage` (and the AES timer). Except for `on` and `off`, the load output follows an algorithm only after a 2-minute delay. Whether `device_mode=off` stops charging was only seen as the register value (the test happened at night), and it only works while remote on/off is enabled (register `0x0202`, bit 1; set by default on firmware 1.42 and newer).
 
-Not exposed on purpose: restore-defaults and clear commands, the system voltage, the Instant Readout key and the passkey. The streetlight timer, the relay and the BMS settings are not covered yet. Other registers can be added to `WRITABLE` in `src/smartsolar/vreg.py`.
+Not exposed on purpose: restore-defaults and clear commands, the system voltage, the Instant Readout key and the passkey. The streetlight timer, the relay, the Bluetooth switch (`ble_mode`: off would cut the link to the charger) and the PIN code are not covered. Other registers can be added to `WRITABLE` in `src/smartsolar/vreg.py`.
 
 ## Profiles
 

@@ -12,7 +12,7 @@ from smartsolar.serial_manager import SerialManager
 from smartsolar.state import Cache
 from smartsolar.vreg import VREG_FIRMWARE, build_write, firmware_version, product_id
 
-CFG = SerialConfig(enabled=True, request_timeout_s=0.2, reopen_initial_s=0.01, reopen_max_s=0.02)
+CFG = SerialConfig(enabled=True, request_timeout_s=0.2, reopen_initial_s=0.01, reopen_max_s=0.02, registers_interval_s=0)
 
 
 class Setup:
@@ -214,6 +214,25 @@ def test_reads_do_not_disturb_the_text_blocks():
     run(go())
 
 
+def test_the_registers_join_the_readings():
+    async def go():
+        dev = FakeSerial()
+        cfg = dataclasses.replace(CFG, registers_interval_s=30)
+        async with running(dev, cfg=cfg) as s:
+            await until(lambda: 0xEDF6 in s.manager.registers and 0x104F in s.manager.unavailable)
+            with_two_blocks(dev)
+            await until(lambda: s.cache.blocks["vedirect"].reading is not None)
+            values = {v.name: v.value for v in s.cache.blocks["vedirect"].reading.values}
+            assert values["float_voltage"] == 13.5 and values["firmware_version"] == "00640100"
+            assert values["battery_voltage"] == 13.32  # the text block's value, not the register's
+            asked = sum(w.startswith(b":7") for w in dev.writes)
+            dev.registers[0xEDF6] = bytes.fromhex("6405")
+            await asyncio.sleep(0.2)
+            assert sum(w.startswith(b":7") for w in dev.writes) == asked  # the next sweep is 30 s away
+
+    run(go())
+
+
 def test_a_write_is_checked_written_and_read_back():
     async def go():
         dev = FakeSerial()
@@ -251,6 +270,17 @@ def test_writes_that_must_not_happen_send_no_set_frame():
             with pytest.raises(InvalidWriteError, match="error 119"):
                 await s.manager.write(build_write({"float_voltage": 17.5}))
             assert not any(w.startswith(b":8") for w in dev.writes)
+
+    run(go())
+
+
+def test_a_setting_of_the_bluetooth_part_is_not_written_over_the_cable():
+    async def go():
+        dev = FakeSerial()
+        async with running(dev) as s:
+            with pytest.raises(NotConnectedError, match="instant_readout: not available over the VE.Direct cable"):
+                await s.manager.write(build_write({"float_voltage": 13.8, "instant_readout": "on"}))
+            assert not any(w.startswith(b":8") for w in dev.writes) and dev.registers[0xEDF6] == bytes.fromhex("4605")
 
     run(go())
 

@@ -50,7 +50,7 @@ class Env:
             gatt=GattConfig(mode=mode, **gatt_cfg),
             keys={A: TEST_KEY} if keys == "default" else keys,
             serial=SerialConfig(enabled=serial is not None, hex=hex, publish_interval_s=0.05, stale_after_s=1.0, request_timeout_s=0.5,
-                                reopen_initial_s=0.01, reopen_max_s=0.02),
+                                reopen_initial_s=0.01, reopen_max_s=0.02, registers_interval_s=0),
             daemon=DaemonConfig(socket=self.sock, state_dir=self.state_dir, registers=registers, csv=CsvConfig(path=self.dir), mqtt=MqttConfig(publish_interval_s=0)),
         )
         clock = FakeClock(synced=True)
@@ -427,6 +427,27 @@ def test_settings_command_reads_the_settings_and_what_a_profile_is_checked_again
             assert "device_mode" not in values
             with pytest.raises(DaemonError) as err:
                 await env.call("settings", names=["battery_voltage"])
+            assert err.value.type == "bad_request"
+
+    run(go())
+
+
+def test_history_command_reads_the_day_records():
+    # yesterday on a SmartSolar 75/15 (VE.Direct, firmware 1.64)
+    yesterday = bytes.fromhex("001600000020000000600512050000000000160200000000d30000009600050ef500")
+    async def go():
+        async with Env() as env:
+            env.backend.registers[0x1051] = yesterday
+            env.backend.registers[0x1052] = b"\xff" + bytes(33)  # an unknown record: left out
+            await env.select()
+            result = await env.call("history", days=2)
+            assert [d["day"] for d in result["days"]] == [-1]
+            day = result["days"][0]
+            assert (day["yield"], day["consumed"], day["max_power"], day["battery_current_max"]) == (0.22, 0.32, 211, 15.0)
+            assert (day["battery_voltage_min"], day["battery_voltage_max"], day["panel_voltage_max"]) == (12.98, 13.76, 35.89)
+            assert (day["time_bulk"], day["time_absorption"], day["time_float"], day["day_sequence"], day["errors"]) == (534, 0, 0, 245, "0,0,0,0")
+            with pytest.raises(DaemonError) as err:
+                await env.call("history", days=31)
             assert err.value.type == "bad_request"
 
     run(go())

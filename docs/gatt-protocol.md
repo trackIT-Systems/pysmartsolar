@@ -90,7 +90,7 @@ A 10-minute run on the SmartSolar stayed connected with about 12 values a second
 
 The register ids and encodings are those of Victron's VE.Direct HEX protocol (rev 18) and are the same over the cable. VictronConnect carries Victron's register dictionary (1733 registers with name, type, scale and description, e.g. `0xEDBC VE_REG_DC_INPUT_POWER un32 [0.01 W]`); the table in `vreg.py` (`VREGS`, `WRITABLE`) was checked against it. `smartsolar vregs` lists them with a `verified` flag (seen with plausible values on the device).
 
-`0xEC5A`, published as `uptime`, is `VE_REG_TREND_LAST_TIME_REFERENCE` in the dictionary: a time reference of the trend data that counts seconds, not the uptime. Other registers the SmartSolar pushes that are not in the table (so only in `raw_registers`): `0xED8C` (`VE_REG_DC_CHANNEL1_CURRENT_MA`, sn32 mA), `0xEC89`/`0xEC8A` (output current and input power for trends), `0x0202` (`VE_REG_REMOTE_CONTROL_USED`), `0x0090` (`VE_REG_BLE_MODE`), `0x0150` (`VE_REG_CAPABILITIES_BLE`) and the history records `0x104F` (total) and `0x1050` (today).
+`0xEC5A` is `VE_REG_TREND_LAST_TIME_REFERENCE` in the dictionary: a time reference of the trend data that counts seconds, published as `trend_time_reference`. It was published as `uptime` before; the uptime is `0x0120` (`VE_REG_UPTIME`, 19 days on a charger whose `0xEC5A` said 136). Other registers the SmartSolar pushes that are not in the table (so only in `raw_registers`): `0xED8C` (`VE_REG_DC_CHANNEL1_CURRENT_MA`, sn32 mA), `0xEC89`/`0xEC8A` (output current and input power for trends), `0x0202` (`VE_REG_REMOTE_CONTROL_USED`), `0x0090` (`VE_REG_BLE_MODE`), `0x0150` (`VE_REG_CAPABILITIES_BLE`) and the history records `0x104F` (total) and `0x1050` (today).
 
 Special ones:
 

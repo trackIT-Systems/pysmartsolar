@@ -65,6 +65,7 @@ class SerialConfig:
     publish_interval_s: float = 60.0  # the device sends a text block every second
     stale_after_s: float = 10.0
     hex: bool = True  # also use the HEX protocol (settings, writes); false: the daemon never transmits
+    registers_interval_s: float = 60.0  # read the registers the text block lacks (HEX); 0: never
     request_timeout_s: float = 2.0
     reopen_initial_s: float = 2.0
     reopen_max_s: float = 60.0
@@ -273,6 +274,7 @@ def _parse_serial(raw: dict[str, Any]) -> SerialConfig:
         publish_interval_s=_float(raw, "publish_interval_s", d.publish_interval_s, "serial"),
         stale_after_s=_float(raw, "stale_after_s", d.stale_after_s, "serial"),
         hex=_bool(raw, "hex", d.hex, "serial"),
+        registers_interval_s=_float(raw, "registers_interval_s", d.registers_interval_s, "serial"),
         request_timeout_s=_float(raw, "request_timeout_s", d.request_timeout_s, "serial"),
         reopen_initial_s=_float(raw, "reopen_initial_s", d.reopen_initial_s, "serial"),
         reopen_max_s=_float(raw, "reopen_max_s", d.reopen_max_s, "serial"),

@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from smartsolar.columns import ALIASES, COLUMNS, DESCRIPTIONS, EVENT_COLUMNS, LEADING, UNITS, _sources, row
+from smartsolar.columns import ALIASES, COLUMNS, DESCRIPTIONS, EVENT_COLUMNS, LEADING, TRAILING, UNITS, _sources, row
 from smartsolar.reading import Reading, Value
 
 WHEN = datetime(2026, 10, 13, 10, 3, tzinfo=timezone.utc)
@@ -23,6 +23,7 @@ def test_columns_are_unique_and_the_measurements_come_first():
     assert len(COLUMNS) == len(set(COLUMNS))
     assert COLUMNS[: len(LEADING)] == LEADING
     assert set(LEADING) <= set(UNITS)
+    assert COLUMNS[-len(TRAILING) :] == TRAILING and COLUMNS[len(COLUMNS) - len(TRAILING) - 1] == "tx_port_function"
 
 
 def test_aliases_and_conversions_are_applied():

@@ -1,9 +1,10 @@
 """Follows a SmartSolar on a VE.Direct cable: text blocks as readings, HEX frames for registers.
 
 The port is opened exclusively and reopened with backoff when it goes away (USB unplugged). The
-text blocks the device pushes every second become readings of the ``vedirect`` block. The HEX
-protocol is only used when a setting is read or written, because a request makes the device cut
-the text block it is sending (that one block is lost). With ``serial.hex`` off the daemon never
+text blocks the device pushes every second become readings of the ``vedirect`` block. Every
+``serial.registers_interval_s`` the HEX protocol reads the registers that GATT reads too
+(settings, history, ...), and their values join the readings; a request makes the device cut the
+text block it is sending (that one block is lost). With ``serial.hex`` off the daemon never
 transmits a byte.
 """
 
@@ -19,19 +20,21 @@ from typing import Any
 from smartsolar import vedirect
 from smartsolar.backoff import Backoff
 from smartsolar.config import SerialConfig
-from smartsolar.errors import ConnectError, NoDataError, NotConnectedError, ProtocolError, WriteFailed
+from smartsolar.errors import ConnectError, NoDataError, NotConnectedError, ProtocolError, UnavailableError, WriteFailed
 from smartsolar.failures import Failures
 from smartsolar.reading import Event, Reading, Value
 from smartsolar.registers import check_write, write_result
 from smartsolar.serial_link import SerialLink, is_pattern, open_pyserial
 from smartsolar.state import Cache, SerialStats
-from smartsolar.vreg import VREG_FIRMWARE, WriteItem
+from smartsolar.vreg import POLLED_VREGS, VREG_FIRMWARE, WriteItem, decode_values, known_vreg
 from smartsolar.vedirect import CMD_GET, CMD_SET, HexFrame, StreamParser, TextBlock
 
 log = logging.getLogger(__name__)
 
 CMD_DONE = 0x1
 CMD_APP_VERSION = 0x3
+
+SWEEP_VREGS = (VREG_FIRMWARE, *POLLED_VREGS)  # the registers GATT publishes, and the firmware
 
 
 class SerialManager:
@@ -69,6 +72,7 @@ class SerialManager:
         self.last_block_mono: float | None = None
         self.last_reading: Reading | None = None
         self.registers: dict[int, bytes] = {}  # the latest raw value of every register the device told us about
+        self.unavailable: set[int] = set()  # registers the device does not have: not asked for again
         self.unknown_fields: dict[str, str] = {}
 
     @property
@@ -98,6 +102,9 @@ class SerialManager:
                 continue
             self._link = link
             self._parser = StreamParser()
+            self.registers = {}
+            self.unavailable = set()
+            sweep = asyncio.create_task(self._sweep_loop()) if self.cfg.hex and self.cfg.registers_interval_s > 0 else None
             self._reported = None
             self.state = "open"
             self.stats.opens += 1
@@ -113,6 +120,9 @@ class SerialManager:
             finally:
                 self._link = None
                 self._fail_waiter(NotConnectedError("the serial port was lost"))
+                if sweep is not None:
+                    sweep.cancel()
+                    await asyncio.gather(sweep, return_exceptions=True)
                 await link.close()
             self.stats.losses += 1
             await self._failed(error, lost=True)
@@ -172,7 +182,9 @@ class SerialManager:
             self._event("serial_device", serial=self.serial, product_id=self.product_id, firmware=self.firmware)
             if self._on_serial is not None:
                 self._on_serial(self.serial)
-        values = tuple(
+        # the registers first: where both have a value, the text block's (newer) one wins
+        values = tuple(v for vreg, raw in self.registers.items() if known_vreg(vreg) for v in decode_values(vreg, raw))
+        values += tuple(
             Value(f.name, f.friendly, f.unit, decoded.values[f.name]) for f in vedirect.TEXT_FIELDS if f.name in decoded.values
         )
         self.last_reading = Reading(self.device_id, "vedirect", datetime.now().astimezone(), values)
@@ -222,8 +234,25 @@ class SerialManager:
             return b"\x00" + version.to_bytes(2, "little") + b"\x00"
         reply = await self._exchange(vedirect.get_frame(vreg), lambda f: f.command == CMD_GET and f.vreg == vreg)
         if reply.flags:
-            raise ProtocolError(f"register 0x{vreg:04x} is not available (flags 0x{reply.flags:02x})")
+            raise UnavailableError(f"register 0x{vreg:04x} is not available (flags 0x{reply.flags:02x})")
         return reply.value
+
+    async def _sweep_loop(self) -> None:
+        """Read the registers GATT publishes, every ``registers_interval_s``, into ``registers``."""
+        while True:
+            async with self._lock:
+                for vreg in SWEEP_VREGS:
+                    if vreg in self.unavailable:
+                        continue
+                    try:
+                        self.registers[vreg] = await self._get(vreg)
+                    except UnavailableError:
+                        self.unavailable.add(vreg)
+                    except ProtocolError as exc:
+                        log.debug("Cannot read register 0x%04x over the serial port: %s", vreg, exc)
+                    except NotConnectedError:
+                        return
+            await asyncio.sleep(self.cfg.registers_interval_s)
 
     async def read(self, vregs: list[int]) -> dict[int, bytes]:
         """Registers the device has; the ones it does not know are left out."""
@@ -244,12 +273,20 @@ class SerialManager:
         self._need_hex()
         results: list[dict[str, Any]] = []
         async with self._lock:
+            old: dict[int, bytes] = {}
+            missing = []
+            for item in items:  # before anything is written: auto then takes GATT for all of them
+                try:
+                    old[item.vreg] = await self._get(item.vreg)
+                except UnavailableError:
+                    missing.append(item.name)
+                except ProtocolError:
+                    pass  # no answer: written anyway, without the old value
+            if missing:
+                raise NotConnectedError(f"{', '.join(missing)}: not available over the VE.Direct cable")
             for item in items:
                 await check_write(self._get, item, via_serial=True)
-                try:
-                    old_raw: bytes | None = await self._get(item.vreg)
-                except ProtocolError:
-                    old_raw = None
+                old_raw = old.get(item.vreg)
                 reply = await self._exchange(vedirect.set_frame(item.vreg, item.raw), lambda f, v=item.vreg: f.command == CMD_SET and f.vreg == v)
                 if reply.flags:
                     raise WriteFailed(f"{item.name}: the device refused the value (flags 0x{reply.flags:02x})")

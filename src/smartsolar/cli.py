@@ -302,6 +302,26 @@ def cmd_write(args: argparse.Namespace, socket: Path | str) -> int:
     return EXIT_OK if all(w["ok"] for w in result["written"]) else EXIT_ERROR
 
 
+def format_history(result: dict[str, Any]) -> str:
+    header = ["DAY", "YIELD kWh", "MAX W", "LOAD kWh", "BATTERY V", "MAX A", "PV MAX V", "BULK/ABS/FLOAT min", "ERRORS"]
+    rows = [
+        [
+            str(d["day"]),
+            fmt_value(d.get("yield")),
+            fmt_value(d.get("max_power")),
+            fmt_value(d.get("consumed")),
+            f"{fmt_value(d.get('battery_voltage_min'))}..{fmt_value(d.get('battery_voltage_max'))}",
+            fmt_value(d.get("battery_current_max")),
+            fmt_value(d.get("panel_voltage_max")),
+            "/".join(fmt_value(d.get(k)) for k in ("time_bulk", "time_absorption", "time_float")),
+            fmt_value(d.get("errors")),
+        ]
+        for d in result["days"]
+    ]
+    text = table(rows, header) if rows else "no history"
+    return text + (f"\nread over {VIA_NAMES.get(result['via'], result['via'])}" if result.get("via") else "")
+
+
 def format_changes(changes: list[profiles.Change]) -> str:
     return table([[c.name, "none" if c.old is None else fmt_value(c.old), "->", "none" if c.new is None else fmt_value(c.new), c.unit] for c in changes])
 
@@ -466,6 +486,9 @@ def run(args: argparse.Namespace) -> int:
     if args.cmd == "scan":
         result = ipc.request(socket, "scan")
         return show(result, format_scan(result))
+    if args.cmd == "history":
+        result = ipc.request(socket, "history", {"days": args.days, **via_args(args)}, timeout=180)
+        return show(result, format_history(result))
     if args.cmd == "fetch-key":
         result = ipc.request(socket, "fetch_key", {"show": args.show})
         text = f"key of {result['address']} fetched and stored"
@@ -513,6 +536,9 @@ def build_parser() -> argparse.ArgumentParser:
         if action == "load":
             p.add_argument("--dry-run", action="store_true", help="only show the differences")
             p.add_argument("--yes", "-y", action="store_true", help="do not ask for confirmation")
+    history = sub.add_parser("history", parents=[common], help="the charger's day records: today (day 0) and up to 30 days before (connects if needed)")
+    history.add_argument("--days", type=int, default=30, choices=range(31), metavar="0..30", help="how many days before today (default 30)")
+    history.add_argument("--via", choices=VIA_CHOICES, help="which way to the device (default: daemon.registers)")
     sub.add_parser("reconnect", parents=[common], help="drop the GATT connection and connect again")
     sub.add_parser("rescan", parents=[common], help="choose the device again now")
     sub.add_parser("scan", parents=[common], help="Victron devices seen in the advertisements")

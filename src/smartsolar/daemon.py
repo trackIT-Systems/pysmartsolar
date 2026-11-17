@@ -36,6 +36,9 @@ from smartsolar.serial_manager import SerialManager
 from smartsolar.state import BLOCKS, AdvertStats, Cache, GattStats, SerialStats
 from smartsolar.tracker import DeviceTracker
 from smartsolar.vreg import (
+    HISTORY_DAY,
+    HISTORY_DAY0,
+    HISTORY_DAYS,
     PROFILE_CONTEXT_VREGS,
     VREG_BATTERY_VOLTAGE_ACTUAL,
     VREG_FIRMWARE,
@@ -355,6 +358,7 @@ class Daemon:
             "fetch_key": self._cmd_fetch_key,
             "write": self._cmd_write,
             "settings": self._cmd_settings,
+            "history": self._cmd_history,
         }
 
     def _key_status(self) -> str:
@@ -555,13 +559,8 @@ class Daemon:
         cfg = self.config.gatt
         return cfg.connect_timeout_s + cfg.pair_timeout_s + cfg.request_timeout_s * (requests + 2) + POLL_TIMEOUT_MARGIN_S
 
-    async def _cmd_settings(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Every writable setting, read live (connects on demand), with what a profile is checked against."""
-        names = args.get("names") or [n for n in WRITABLE if n != "device_mode"]
-        unknown = [n for n in names if n not in WRITABLE]
-        if unknown:
-            raise BadRequest(f"not a writable register: {', '.join(map(str, unknown))}")
-        vregs = [WRITABLE[n].vreg for n in names] + list(PROFILE_CONTEXT_VREGS)
+    async def _read_registers(self, args: dict[str, Any], vregs: list[int]) -> tuple[str, dict[int, Any]]:
+        """Read registers live over the first way that works (connects on demand); the ones the device lacks are left out."""
 
         async def read(path: str) -> tuple[str, dict[int, Any]]:
             if path == "serial":
@@ -571,7 +570,28 @@ class Daemon:
                 raise NoDataError("no device selected yet")
             return path, await asyncio.wait_for(self.gatt.request_read(vregs), self._timeout(path, len(vregs)))
 
-        path, raw = await self._via(args, read)
+        return await self._via(args, read)
+
+    async def _cmd_history(self, args: dict[str, Any]) -> dict[str, Any]:
+        """The day records: today (day 0) and up to 30 days before."""
+        days = args.get("days", HISTORY_DAYS)
+        if not isinstance(days, int) or not 0 <= days <= HISTORY_DAYS:
+            raise BadRequest(f"days must be 0..{HISTORY_DAYS}")
+        path, raw = await self._read_registers(args, [HISTORY_DAY0 + d for d in range(days + 1)])
+        records = []
+        for d in range(days + 1):
+            values = HISTORY_DAY.decode(raw[HISTORY_DAY0 + d]) if HISTORY_DAY0 + d in raw else []
+            if values:
+                records.append({"day": -d, **{v.name: v.value for v in values}})
+        return {"device": self._current_id(), "via": path, "days": records}
+
+    async def _cmd_settings(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Every writable setting, read live (connects on demand), with what a profile is checked against."""
+        names = args.get("names") or [n for n in WRITABLE if n != "device_mode"]
+        unknown = [n for n in names if n not in WRITABLE]
+        if unknown:
+            raise BadRequest(f"not a writable register: {', '.join(map(str, unknown))}")
+        path, raw = await self._read_registers(args, [WRITABLE[n].vreg for n in names] + list(PROFILE_CONTEXT_VREGS))
         values = []
         for name in names:
             writable = WRITABLE[name]

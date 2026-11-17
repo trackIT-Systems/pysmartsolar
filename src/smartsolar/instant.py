@@ -69,6 +69,24 @@ ERRORS = {
     119: "user settings invalid",
 }
 
+# The tracker mode (VE.Direct MPPT, register 0xEDB3) and the off reason bits (OR, register 0x0207)
+TRACKER_MODES = {0: "off", 1: "voltage or current limited", 2: "mpp tracker active"}
+OFF_REASONS = {
+    0x00000001: "no input power",
+    0x00000002: "switched off (power switch)",
+    0x00000004: "switched off (device mode register)",
+    0x00000008: "remote input",
+    0x00000010: "protection active",
+    0x00000020: "paygo",
+    0x00000040: "bms",
+    0x00000080: "engine shutdown detection",
+    0x00000100: "analysing input voltage",
+}
+
+
+def off_reasons(number: int) -> str:
+    return ", ".join(name for bit, name in OFF_REASONS.items() if number & bit) or "none"
+
 
 @dataclass(frozen=True)
 class Header:

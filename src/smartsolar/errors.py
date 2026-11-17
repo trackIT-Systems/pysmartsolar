@@ -34,6 +34,10 @@ class ProtocolError(SmartsolarError):
     """The device sent something the GATT protocol parser cannot use, or did not answer in time."""
 
 
+class UnavailableError(ProtocolError):
+    """The device does not have the register (it answered, but with an error)."""
+
+
 class InvalidWriteError(SmartsolarError):
     """A write request failed validation before anything was sent."""
 

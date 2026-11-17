@@ -26,7 +26,7 @@ All three formats of a reading carry the same columns in the same order:
 1. `device`: the serial number, else the MAC address.
 2. The columns listed below. A value the reading lacks is `null` (empty in CSV).
 
-CBOR has no key names and writes each number in the smallest form that keeps it exact. That makes it the smallest format, for cellular links: a VE.Direct reading is about 145 bytes as CBOR and 135 as CSV. JSON repeats all 75 column names, null or not, and is about 1.5 kB. Decode a CBOR array by the column order below; the files have the same order after `time`, with `block` after `device`.
+CBOR has no key names and writes each number in the smallest form that keeps it exact. That makes it the smallest format, for cellular links: a VE.Direct reading is about 145 bytes as CBOR and 135 as CSV. JSON repeats all 81 column names, null or not, and is about 1.5 kB. Decode a CBOR array by the column order below; the files have the same order after `time`, with `block` after `device`.
 
 A VE.Direct reading as CSV:
 
@@ -72,19 +72,21 @@ Measurements first, then the settings and identity values (mostly from GATT), th
 - GATT's `panel_power` is published as `pv_power`, and `load_output_current` as `load_current`.
 - `yield_today` is in kWh; the advertisement's Wh are converted.
 
+"GATT" in the sources means a register. The VE.Direct cable reads the same registers over HEX every `serial.registers_interval_s` (default 60 s, with `serial.hex` on), so a VE.Direct reading has these columns too, with the text block's values where both have one. The cable does not reach the Bluetooth part (`mac_address`, `instant_readout`), the trend and channel registers (`trend_time_reference`, `channel_1_*`, `pv_power_trend`, `load_current_trend`), and on firmware 1.64 not `custom_name`; their columns stay empty in VE.Direct readings.
+
 | Column | Unit | Meaning | Sources |
 |---|---|---|---|
 | `device_state` |  | Device state | VE.Direct, GATT, advertisement |
-| `device_state_code` |  | Device state code | VE.Direct, advertisement |
+| `device_state_code` |  | Device state code | VE.Direct, GATT, advertisement |
 | `charger_error` |  | Charger error | VE.Direct, GATT, advertisement |
-| `charger_error_code` |  | Charger error code | VE.Direct, advertisement |
+| `charger_error_code` |  | Charger error code | VE.Direct, GATT, advertisement |
 | `battery_voltage` | V | Battery voltage | VE.Direct, GATT, advertisement |
-| `battery_current` | A | Battery current | VE.Direct, GATT, advertisement |
+| `battery_current` | A | Battery current | VE.Direct, GATT (channel 1, `0xED8F`), advertisement |
 | `battery_temperature` | °C | Battery temperature | GATT |
 | `panel_voltage` | V | Panel voltage | VE.Direct, GATT |
 | `pv_power` | W | PV power | VE.Direct, GATT, advertisement (GATT: `panel_power`) |
 | `load_current` | A | Load current | VE.Direct, GATT, advertisement (GATT: `load_output_current`) |
-| `load_output` |  | Load output | VE.Direct |
+| `load_output` |  | Load output | VE.Direct, GATT (`0xEDA8`) |
 | `load_output_status` |  | Load output status | GATT |
 | `load_output_voltage` | V | Load output voltage | GATT |
 | `yield_today` | kWh | Yield today | VE.Direct, GATT, advertisement (advertisement: Wh, converted) |
@@ -93,13 +95,13 @@ Measurements first, then the settings and identity values (mostly from GATT), th
 | `max_power_today` | W | Maximum power today | VE.Direct, GATT |
 | `max_power_yesterday` | W | Maximum power yesterday | VE.Direct, GATT |
 | `charger_temperature` | °C | Charger temperature | GATT |
-| `tracker_mode` |  | Tracker mode | VE.Direct |
-| `off_reason` |  | Off reason | VE.Direct |
+| `tracker_mode` |  | Tracker mode | VE.Direct, GATT (`0xEDB3`) |
+| `off_reason` |  | Off reason | VE.Direct, GATT (`0x0207`) |
 | `device_mode` |  | Device mode | GATT |
 | `day_sequence` |  | Day sequence number | VE.Direct, GATT (history record `0x1050`) |
 | `mac_address` |  | MAC address | GATT |
 | `firmware_version` |  | Firmware version | GATT |
-| `uptime` | s | Uptime | GATT |
+| `uptime` | s | Time since the charger started (`0x0120`) | GATT |
 | `channel_1_voltage` | V | Channel 1 voltage | GATT |
 | `channel_1_current` | A | Channel 1 current | GATT |
 | `load_output_offset_voltage` | V | Load output offset voltage | GATT |
@@ -149,6 +151,12 @@ Measurements first, then the settings and identity values (mostly from GATT), th
 | `time_float_today` | min | Time in float today | GATT |
 | `battery_current_max_today` | A | Maximum battery current today | GATT |
 | `panel_voltage_max_today` | V | Maximum panel voltage today | GATT |
+| `instant_readout` |  | Instant Readout: the advertisements carry the encrypted live data (`on`, `off`) | GATT (Bluetooth part) |
+| `custom_name` |  | The name VictronConnect shows | GATT |
+| `bms_present` |  | A BMS controls charging (`absent`, `present`) | GATT |
+| `identify` |  | Identify mode: the LEDs blink (`on`, `off`) | GATT |
+| `charge_current` | A | Charge current: battery and load output (`0xEDD7`) | GATT |
+| `trend_time_reference` | s | Time reference of the trend data (`0xEC5A`, published as `uptime` before) | GATT |
 
 ## CSV files
 

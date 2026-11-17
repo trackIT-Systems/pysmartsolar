@@ -19,6 +19,7 @@ from smartsolar.errors import (
 from smartsolar.vesmart import ROOT, VREG_KEEPALIVE, Message, Op
 from smartsolar.vreg import (
     VREG_FIRMWARE,
+    BLUETOOTH_VREGS,
     VREG_KEY,
     VREG_MAC,
     VREG_PRODUCT_ID,
@@ -28,7 +29,6 @@ from smartsolar.vreg import (
 log = logging.getLogger(__name__)
 
 START_TIMEOUT_S = 10.0
-ROOT_VREGS = (VREG_KEY, VREG_MAC)  # registers of the Bluetooth part that belong to the charger's values
 
 
 class GattSession:
@@ -60,9 +60,9 @@ class GattSession:
 
     @property
     def values(self) -> dict[int, Any]:
-        """The latest raw value of every register of the charger, and the MAC (and key) of the Bluetooth part."""
+        """The latest raw value of every register of the charger, and those of the Bluetooth part (MAC, key, Instant Readout)."""
         root = self._by_instance.get(ROOT, {})
-        merged = {vreg: root[vreg] for vreg in ROOT_VREGS if vreg in root}
+        merged = {vreg: root[vreg] for vreg in BLUETOOTH_VREGS if vreg in root}
         merged.update(self._by_instance.get(self.instance, {}))
         return merged
 
@@ -146,7 +146,7 @@ class GattSession:
             if message.instance == ROOT and vreg == VREG_KEEPALIVE:
                 log.debug("The device does not take the keepalive (code %s)", code)
                 return
-            if message.instance == self.instance:
+            if message.instance == self._instance_of(vreg):
                 self.errors[vreg] = code if isinstance(code, int) else -1
             for _, future in self._waiters.pop((message.instance, vreg), []):
                 if not future.done():
@@ -221,9 +221,12 @@ class GattSession:
         await self._send(future, vesmart.get_values(instance, [vreg, *also]))
         return await self._wait(future, f"register 0x{vreg:04x}", timeout_s)
 
+    def _instance_of(self, vreg: int) -> int:
+        return ROOT if vreg in BLUETOOTH_VREGS else self.instance
+
     async def request(self, vreg: int, timeout_s: float) -> Any:
-        """Read a register of the charger now."""
-        return await self._request(self.instance, vreg, timeout_s)
+        """Read a register of the charger (or of the Bluetooth part) now."""
+        return await self._request(self._instance_of(vreg), vreg, timeout_s)
 
     async def refresh(self, vregs: Iterable[int], timeout_s: float = 1.0) -> None:
         """Read registers one after the other. Ones the device refuses are not asked for again."""
@@ -240,9 +243,10 @@ class GattSession:
                 log.debug("Cannot refresh register 0x%04x over GATT: %s", vreg, exc)
 
     async def write_register(self, vreg: int, raw: bytes, timeout_s: float) -> Any:
-        """Write a register of the charger. The device answers with a value that echoes what it stored."""
-        future = self._expect(self.instance, vreg, lambda value: bytes(value) == raw if isinstance(value, (bytes, bytearray)) else False)
-        await self._send(future, vesmart.set_value(self.instance, vreg, raw))
+        """Write a register of the charger (or of the Bluetooth part). The device answers with a value that echoes what it stored."""
+        instance = self._instance_of(vreg)
+        future = self._expect(instance, vreg, lambda value: bytes(value) == raw if isinstance(value, (bytes, bytearray)) else False)
+        await self._send(future, vesmart.set_value(instance, vreg, raw))
         try:
             return await asyncio.wait_for(future, timeout_s)
         except TimeoutError:

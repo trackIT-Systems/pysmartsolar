@@ -7,7 +7,8 @@ from smartsolar.vreg import VREG_KEY, WRITABLE, build_write, decode_values, deco
 
 def test_decode_registers():
     assert decode_vreg(0xED8D, b"\x33\x05").value == 13.31
-    assert decode_vreg(0xEC5A, (55501134).to_bytes(4, "little")).value == 55501134
+    assert decode_vreg(0x0120, (1643512).to_bytes(4, "little")).value == 1643512  # 19 days
+    assert decode_vreg(0xEC5A, (55501134).to_bytes(4, "little")).name == "trend_time_reference"
     assert decode_vreg(0xEC66, bytes.fromhex("f748188a779d")).value == "f7:48:18:8a:77:9d"
     assert decode_vreg(0x0102, bytes.fromhex("00640100")).value == "00640100"
     assert decode_vreg(0x2211, bytes.fromhex("2003")).value == 8.0 and decode_vreg(0x2212, bytes.fromhex("cc06")).value == 17.4
@@ -49,6 +50,31 @@ def test_build_write_encodes_like_the_captured_writes():
     assert build_write({"battery_max_current": 15})[0].raw == bytes.fromhex("9600")
 
 
+def test_text_and_the_new_settings():
+    (item,) = build_write({"custom_name": "Mast 3 – Süd"})
+    assert (item.vreg, item.raw, item.value) == (0x010C, "Mast 3 – Süd".encode(), "Mast 3 – Süd")
+    assert WRITABLE["custom_name"].decode(b"SmartSolar HQ2128VJE6U\x00") == "SmartSolar HQ2128VJE6U"
+    assert decode_vreg(0x010C, b"Mast 3").value == "Mast 3"
+    assert build_write({"custom_name": ""})[0].raw == b""
+    assert build_write({"instant_readout": "on"})[0].raw == b"\x01" and decode_vreg(0xEC7D, b"\x00").value == "off"
+    assert build_write({"bms_present": "absent"})[0].raw == b"\x00" and decode_vreg(0xEDE8, b"\x01").value == "present"
+    assert {w["name"]: w["allowed"] for w in writable_table()}["custom_name"] == "text, up to 80 bytes"
+
+
+def test_gatt_gives_the_values_of_the_vedirect_text_block():
+    def values(vreg, raw):
+        return {v.name: v.value for v in decode_values(vreg, raw)}
+
+    assert values(0x0201, b"\x03") == {"device_state": "bulk", "device_state_code": 3}
+    assert values(0xEDDA, b"\x00") == {"charger_error": "none", "charger_error_code": 0}
+    assert values(0xEDA8, b"\x01") == {"load_output_status": 1, "load_output": "on"}
+    assert values(0xEDB3, b"\x02") == {"tracker_mode": "mpp tracker active"}
+    assert values(0xED8F, (-3).to_bytes(2, "little", signed=True)) == {"channel_1_current": -0.3, "battery_current": -0.3}
+    assert values(0xEDD7, (21).to_bytes(2, "little")) == {"charge_current": 2.1}  # battery and load
+    assert values(0x0207, bytes.fromhex("00000000")) == {"off_reason": "none"}
+    assert values(0x0207, bytes.fromhex("05000000")) == {"off_reason": "no input power, switched off (device mode register)"}
+
+
 def test_build_write_keeps_the_order_and_handles_several_registers():
     items = build_write({"device_mode": "on", "float_voltage": 13.5})
     assert [i.name for i in items] == ["device_mode", "float_voltage"]
@@ -67,6 +93,8 @@ def test_build_write_keeps_the_order_and_handles_several_registers():
         ({"float_voltage": 4.9}, "outside"),
         ({"float_voltage": 70.5}, "outside"),
         ({"battery_max_current": -1}, "outside"),
+        ({"custom_name": "x" * 81}, "81 bytes, at most 80"),
+        ({"instant_readout": "yes"}, "is not one of off, on"),
     ],
 )
 def test_build_write_refuses(values, message):

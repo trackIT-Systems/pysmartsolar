@@ -91,7 +91,7 @@ def test_poll_mode_publishes_the_decoded_values_and_disconnects():
             assert reading.block == "gatt" and reading.device == A
             assert values["channel_1_voltage"] == 13.31 and values["firmware_version"] == "00640100"
             assert values["mac_address"] == "f7:48:18:8a:77:9d" and values["battery_temperature"] is None
-            assert values["uptime"] == 1000
+            assert values["uptime"] == 1000 and values["trend_time_reference"] == 2000
             assert "vreg_ec65" not in values and TEST_KEY.hex() not in str([v.value for v in reading.values])
             assert all(not n.startswith("vreg_") for n in values)  # unknown registers are not published
             await until(lambda: rig.backend.links[0].disconnect_calls == 1)
@@ -453,6 +453,30 @@ def test_mode_off_holds_a_device_without_instant_readout_in_the_fallback_mode():
         assert rig.mgr.mode == "off"
         rig = Rig("poll", readout_off={A})  # a configured mode wins
         assert rig.mgr.mode == "poll"
+
+    run(go())
+
+
+def test_switching_instant_readout_on_ends_the_fallback_hold_and_fetches_the_key():
+    async def go():
+        readout_off = {A}
+        async with Rig("off", have_key=False, readout_off=readout_off) as rig:
+            await until(lambda: rig.mgr.state == GattState.CONNECTED and rig.readings)
+            assert rig.kinds().count("key_fetched") == 1  # the key was missing: fetched on connect
+            del rig.keys[A]
+            readout_off.clear()  # the adverts now carry data
+            await until(lambda: A in rig.keys and rig.mgr.state is GattState.IDLE)
+            assert rig.mgr.mode == "off" and rig.kinds().count("key_fetched") == 2 and "disconnected" in rig.kinds()
+
+    run(go())
+
+
+def test_a_key_request_is_served_on_the_held_link():
+    async def go():
+        async with Rig("hold") as rig:
+            await until(lambda: rig.mgr.state == GattState.CONNECTED and rig.readings)
+            key = await asyncio.wait_for(rig.mgr.request_key(), 3.0)
+            assert key == TEST_KEY and len(rig.backend.links) == 1 and rig.mgr.state is GattState.CONNECTED
 
     run(go())
 

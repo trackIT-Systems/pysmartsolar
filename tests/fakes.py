@@ -72,7 +72,8 @@ def product_advert(address: str = A, *, rssi: float = -60, name: str | None = No
 def default_values() -> dict[int, bytes]:
     return {
         0x0102: bytes.fromhex("00640100"),
-        0xEC5A: (1000).to_bytes(4, "little"),
+        0xEC5A: (2000).to_bytes(4, "little"),
+        0x0120: (1000).to_bytes(4, "little"),
         0xEC66: bytes.fromhex("f748188a779d"),
         0xED8D: (1331).to_bytes(2, "little"),
         0xEDA9: (1331).to_bytes(2, "little"),
@@ -100,7 +101,7 @@ def default_registers() -> dict[int, bytes]:
     return registers
 
 
-from smartsolar.vreg import WRITABLE  # noqa: E402
+from smartsolar.vreg import BLUETOOTH_VREGS, WRITABLE  # noqa: E402
 
 WRITABLE_REGISTERS = {w.vreg for w in WRITABLE.values()}
 
@@ -219,9 +220,14 @@ class FakeLink:
                 self.pings += 1
                 self._arm_deadline()
                 self._send(value8(vreg, raw, vesmart.ROOT))
+            elif m.instance == vesmart.ROOT:
+                self.backend.set_log.append((vreg, raw))
+                if vreg in WRITABLE_REGISTERS and vreg in BLUETOOTH_VREGS and not self.backend.refuse_writes:
+                    self.backend.root_registers[vreg] = raw
+                    self._send(value8(vreg, raw, vesmart.ROOT))
             elif m.instance == CHARGER:
                 self.backend.set_log.append((vreg, raw))
-                if vreg in WRITABLE_REGISTERS and not self.backend.refuse_writes:
+                if vreg in WRITABLE_REGISTERS and vreg not in BLUETOOTH_VREGS and not self.backend.refuse_writes:
                     self.backend.registers[vreg] = raw
                     self._send(value8(vreg, raw, CHARGER))
                 # a write the device does not accept gets no answer
@@ -259,7 +265,7 @@ class FakeBackend:
         self.params = PARAMS
         self.values = default_values()
         self.registers = default_registers()
-        self.root_registers = {0x0100: bytes.fromhex("0097a1fe"), 0x0102: bytes.fromhex("00180200")}
+        self.root_registers = {0x0100: bytes.fromhex("0097a1fe"), 0x0102: bytes.fromhex("00180200"), 0xEC7D: b"\x00"}
         self.get_log: list[int] = []
         self.set_log: list[tuple[int, bytes]] = []
         self.refuse_writes = False

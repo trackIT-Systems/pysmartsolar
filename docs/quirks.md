@@ -29,12 +29,15 @@ On the Raspberry Pi 3 and 5 Wi-Fi and Bluetooth share one chip. With the 2.4 GHz
 * **Load output algorithm change.** A new algorithm (`0xEDAB`) becomes active after about 2 minutes, not at once. An early test that read "alt 1 did not switch on" was this delay.
 * **Not-available values.** `0x7FFF` / `0xFFFF` / `0x1FF` in advertisements; `0xFFFF` for the battery temperature without sensor and for "low temperature current: use the maximum".
 * **Daytime.** Everything was tested at night or with a very dim panel (0 to 2 W). PV power, yield and battery current at real power are unchecked.
+* **A new GATT connection blinks the LEDs.** The charger sets `identify` (`0x010E`) to on for about 10 s after a GATT connection is set up, then back to off (SmartSolar 75/15, firmware 1.74). A write right after connecting reports the old value as `on`, and a poll then publishes `identify=on`.
+* **Charge current and battery current.** `0xEDD7` (`charge_current`) is what the charger delivers to the battery and the load output together; the battery current is channel 1 (`0xED8F`), the VE.Direct text block's `I`.
 
 ## Two interfaces, one device
 
 * The serial number is the device id everywhere. The cable sends it (`SER#`), over Bluetooth it is the second word of the name (`SmartSolar HQ22294ZGEU`).
 * With both interfaces, the BLE device with the cable's serial is followed even if another SmartSolar is stronger.
 * The VE.Direct port is exclusive: no other reader may use it (the old `vedirect_dump` of mqttutil, for example).
+* **What the cable does not reach.** Over HEX the charger answers every charger register except the trend and channel registers (`0xEC5A`, `0xEC89`, `0xEC8A`, `0xED8C`, `0xED8D`, `0xED8F`), the custom name (`0x010C`, firmware 1.64) and the Bluetooth part (VE.Smart instance 0: `0xEC65`, `0xEC66`, `0xEC7D`); the firmware is a command, not register `0x0102`. A register sweep of all 1662 ids takes 90 s (SmartSolar 75/15, firmware 1.64). A write of one of these over the cable is refused before anything is sent, and `auto` takes GATT.
 
 ## Daemon
 

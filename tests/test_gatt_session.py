@@ -202,6 +202,20 @@ def test_write_register_waits_for_the_echo_and_the_register_changes():
     run(go())
 
 
+def test_instant_readout_is_read_and_written_on_the_bluetooth_part():
+    async def go():
+        backend, link, session, _ = await open_session(keepalive_s=0)
+        await session.start()
+        assert await session.request(0xEC7D, 1.0) == b"\x00"
+        assert await session.write_register(0xEC7D, b"\x01", 1.0) == b"\x01"
+        assert backend.root_registers[0xEC7D] == b"\x01" and session.values[0xEC7D] == b"\x01"
+        sets = [m for m in link.messages if m.op == Op.SET_VALUES and m.args[0][0] == 0xEC7D]
+        assert [m.instance for m in sets] == [0]
+        await session.close()
+
+    run(go())
+
+
 def test_a_write_the_device_does_not_answer_fails():
     async def go():
         backend, _, session, _ = await open_session(keepalive_s=0)

@@ -332,14 +332,7 @@ class GattManager:
 
     async def _work(self, adv: Advertisement, session: GattSession) -> None:
         if self._needs_key(adv):
-            key = await self._until_stop(session.fetch_key(self.cfg.request_timeout_s))
-            self._store_key(adv.address, key)
-            self.last_key_fetch = datetime.now().astimezone()
-            self._event("key_fetched", adv.address)
-            for future in self._key_futures:
-                if not future.done():
-                    future.set_result(key)
-            self._key_futures = []
+            await self._fetch_key(adv, session)
         await self._do_reads(session)
         await self._do_writes(adv, session)
         if self.mode == "poll":
@@ -348,6 +341,16 @@ class GattManager:
             await self._hold(adv, session)
         else:
             self._works(adv)
+
+    async def _fetch_key(self, adv: Advertisement, session: GattSession) -> None:
+        key = await self._until_stop(session.fetch_key(self.cfg.request_timeout_s))
+        self._store_key(adv.address, key)
+        self.last_key_fetch = datetime.now().astimezone()
+        self._event("key_fetched", adv.address)
+        for future in self._key_futures:
+            if not future.done():
+                future.set_result(key)
+        self._key_futures = []
 
     def _works(self, adv: Advertisement) -> None:
         """The attempt did what it connected for: a logged connection failure has ended."""
@@ -389,8 +392,12 @@ class GattManager:
                 raise NotConnectedError("link lost")
             if self._reconnect or self._device_changed:
                 return
+            if self._key_futures:
+                await self._fetch_key(adv, session)
             await self._do_reads(session)
             await self._do_writes(adv, session)
+            if self.mode != "hold":
+                return  # Instant Readout was switched on: the fallback no longer applies
             if self._clock() >= next_publish:
                 await self._until_stop(session.refresh(POLLED_VREGS))
                 reading = self.snapshot()

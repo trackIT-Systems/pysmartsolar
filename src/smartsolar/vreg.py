@@ -25,6 +25,9 @@ CHAR_UUIDS = {
 
 VREG_KEY = 0xEC65  # the Instant Readout encryption key (instance 0)
 VREG_MAC = 0xEC66  # instance 0
+VREG_ADVERTISEMENT_MODE = 0xEC7D  # instance 0: 1 = Instant Readout on
+# Registers of the Bluetooth part (VE.Smart instance 0), not of the charger: GATT only.
+BLUETOOTH_VREGS = (VREG_KEY, VREG_MAC, VREG_ADVERTISEMENT_MODE)
 
 
 # -- registers ------------------------------------------------------------------------
@@ -102,6 +105,18 @@ def _error(raw: Any) -> Any:
     return _enum(ERRORS)(raw)
 
 
+def _tracker(raw: Any) -> Any:
+    from smartsolar.instant import TRACKER_MODES
+
+    return _enum(TRACKER_MODES)(raw)
+
+
+def _off_reason(raw: Any) -> str:
+    from smartsolar.instant import off_reasons
+
+    return off_reasons(int.from_bytes(_bytes(raw), "little"))
+
+
 def _mac(raw: Any) -> str:
     return ":".join(f"{b:02x}" for b in _bytes(raw))
 
@@ -111,12 +126,12 @@ VREGS: dict[int, Vreg] = {
     for v in (
         Vreg(0xEC66, "mac_address", "MAC address", "", _mac),
         Vreg(0x0102, "firmware_version", "Firmware version", "", _hex),
-        Vreg(0xEC5A, "uptime", "Uptime", "s", _unsigned()),
+        Vreg(0x0120, "uptime", "Time since the charger started", "s", _unsigned()),
         Vreg(0x0200, "device_mode", "Device mode", "", _enum(DEVICE_MODES)),
         Vreg(0x0201, "device_state", "Device state", "", _state),
         Vreg(0xEDDA, "charger_error", "Charger error", "", _error),
         Vreg(0xEDD5, "battery_voltage", "Battery voltage", "V", _unsigned(0.01)),
-        Vreg(0xEDD7, "battery_current", "Battery current", "A", _signed(0.1), verified=False),
+        Vreg(0xEDD7, "charge_current", "Charge current (battery and load output)", "A", _signed(0.1)),
         Vreg(0xEDD3, "yield_today", "Yield today", "kWh", _unsigned(0.01), verified=False),
         Vreg(0xEDD2, "max_power_today", "Maximum power today", "W", _unsigned(), verified=False),
         Vreg(0xEDD1, "yield_yesterday", "Yield yesterday", "kWh", _unsigned(0.01), verified=False),
@@ -141,8 +156,8 @@ VREGS: dict[int, Vreg] = {
 # Registers that are read at every poll and every hold publish. The device pushes the ones that
 # change by itself (panel voltage and power, channel 1 voltage and current, load output, ...).
 _POLLED_BASE: tuple[int, ...] = (
-    0x0200, 0x0201, 0xEDDA, 0xEDD5, 0xEDD7, 0xEDD3, 0xEDD2, 0xEDD1, 0xEDD0, 0xEDDC, 0xEDDB,
-    0xEDBB, 0xEDBC, 0xEDAD, 0xEDEF,
+    0x0200, 0x0201, 0xEDDA, 0xEDD5, 0xEDD7, 0xED8F, 0xEDD3, 0xEDD2, 0xEDD1, 0xEDD0, 0xEDDC, 0xEDDB,
+    0xEDBB, 0xEDBC, 0xEDAD, 0xEDEF, 0x0120,
 )
 
 # Never turned into a Value: it is a secret.
@@ -174,6 +189,7 @@ def vreg_table() -> list[dict[str, Any]]:
     """Every published register, a history record with one row per value."""
     rows = [{"id": f"0x{v.id:04x}", "name": v.name, "friendly": v.friendly, "unit": v.unit, "verified": v.verified} for v in VREGS.values()]
     rows += [{"id": f"0x{r.id:04x}", "name": f.name, "friendly": f.friendly, "unit": f.unit, "verified": True} for r in RECORDS.values() for f in r.fields]
+    rows += [{"id": f"0x{v.id:04x}", "name": v.name, "friendly": v.friendly, "unit": v.unit, "verified": v.verified} for v in DERIVED.values()]
     return sorted(rows, key=lambda row: row["id"])
 
 
@@ -208,6 +224,7 @@ class Writable:
     needs_user_type: bool = False  # the device only takes it if the battery type is user defined (255)
     mask: int | None = None  # bits of the raw value that belong to this setting
     verified: bool = True  # the scale and meaning were seen on a device (zero values do not count)
+    text: bool = False  # a UTF-8 string of up to ``width`` bytes
 
     @property
     def friendly(self) -> str:
@@ -215,6 +232,12 @@ class Writable:
 
     def encode(self, value: Any) -> tuple[bytes, Any]:
         """The bytes to send and the value as it will be read back."""
+        if self.text:
+            text = "" if value is None else str(value)
+            data = text.encode()
+            if len(data) > self.width:
+                raise InvalidWriteError(f"{self.name}: {len(data)} bytes, at most {self.width} fit")
+            return data, text
         if self.values is not None:
             key = str(value).strip().lower()
             key = (self.aliases or {}).get(key, key)
@@ -242,6 +265,8 @@ class Writable:
         return raw if self.scale == 1.0 else round(raw * self.scale, 2)
 
     def decode(self, raw: Any) -> Any:
+        if self.text:
+            return _bytes(raw).decode("utf-8", "replace").rstrip("\x00")
         number = int.from_bytes(_bytes(raw), "little", signed=self.signed)
         if self.mask is not None:
             number &= self.mask
@@ -405,7 +430,7 @@ def writable_table() -> list[dict[str, Any]]:
             "vreg": f"0x{w.vreg:04x}",
             "description": w.description,
             "unit": w.unit,
-            "allowed": list(w.values) if w.values else ("none or " if w.na_raw is not None else "") + f"{w.minimum:g}..{w.maximum:g}",
+            "allowed": list(w.values) if w.values else f"text, up to {w.width} bytes" if w.text else ("none or " if w.na_raw is not None else "") + f"{w.minimum:g}..{w.maximum:g}",
             "vcsf": w.vcsf,
         }
         for w in WRITABLE.values()
@@ -429,8 +454,34 @@ for _v in (
     Vreg(0x0202, "remote_control_used", "Remote control flags (bit 1: remote on/off)", "", _unsigned()),
     Vreg(0x0090, "ble_mode", "Bluetooth mode", "", _enum(BLE_MODES)),
     Vreg(0x0150, "ble_capabilities", "Bluetooth capability flags", "", _unsigned()),
+    # the same columns as the VE.Direct text block (MPPT, OR)
+    Vreg(0xEDB3, "tracker_mode", "Tracker mode", "", _tracker),
+    Vreg(0x0207, "off_reason", "Off reason", "", _off_reason),
+    # was published as uptime, but counts the seconds of the trend data (VE_REG_TREND_LAST_TIME_REFERENCE)
+    Vreg(0xEC5A, "trend_time_reference", "Time reference of the trend data", "s", _unsigned()),
 ):
     VREGS[_v.id] = _v
+
+# A second value of a register, for the columns the VE.Direct text block has (CS, ERR, LOAD, I).
+DERIVED: dict[int, Vreg] = {
+    v.id: v
+    for v in (
+        Vreg(0x0201, "device_state_code", "Device state code", "", _unsigned()),
+        Vreg(0xEDDA, "charger_error_code", "Charger error code", "", _unsigned()),
+        Vreg(0xEDA8, "load_output", "Load output", "", _enum({0: "off", 1: "on"})),
+        Vreg(0xED8F, "battery_current", "Battery current", "A", _signed(0.1)),  # VE.Direct I; 0xEDD7 adds the load
+    )
+}
+
+# Settings added later, registered here so that their columns come last too.
+for _w in (
+    Writable("instant_readout", VREG_ADVERTISEMENT_MODE, "Instant Readout: the advertisements carry the encrypted live data (Bluetooth part, GATT only)", 1, values=_enum_values(OFF_ON)),
+    Writable("custom_name", 0x010C, "The name VictronConnect shows", 80, text=True),
+    Writable("bms_present", 0xEDE8, "A BMS controls charging (the charger sets this itself when it sees one)", 1, values={"absent": 0, "present": 1}),
+    Writable("identify", 0x010E, "Identify mode: the device blinks its LEDs (on) until set off", 1, values=_enum_values(OFF_ON)),
+):
+    WRITABLE[_w.name] = _w
+_register_settings()
 
 
 @dataclass(frozen=True)
@@ -507,6 +558,25 @@ RECORDS: dict[int, HistoryRecord] = {
 }
 
 
+# The day records, today (0x1050) and the 30 days before (0x1051..0x106E): read on request, not published.
+HISTORY_DAY0 = 0x1050
+HISTORY_DAYS = 30
+HISTORY_DAY = HistoryRecord(HISTORY_DAY0, "history_day", (
+    RecordField("yield", "Yield", "kWh", 0, 4, 0.01),
+    RecordField("consumed", "Load output consumption", "kWh", 4, 4, 0.01),
+    RecordField("battery_voltage_max", "Maximum battery voltage", "V", 8, 2, 0.01),
+    RecordField("battery_voltage_min", "Minimum battery voltage", "V", 10, 2, 0.01),
+    RecordField("errors", "Last four error codes", "", 13, 4, errors=True),
+    RecordField("time_bulk", "Time in bulk", "min", 17, 2),
+    RecordField("time_absorption", "Time in absorption", "min", 19, 2),
+    RecordField("time_float", "Time in float", "min", 21, 2),
+    RecordField("max_power", "Maximum power", "W", 23, 4),
+    RecordField("battery_current_max", "Maximum battery current", "A", 27, 2, 0.1),
+    RecordField("panel_voltage_max", "Maximum panel voltage", "V", 29, 2, 0.01),
+    RecordField("day_sequence", "Day sequence number", "", 31, 2),
+))
+
+
 def decode_values(vreg: int, raw: Any) -> list[Value]:
     """All values of a register: one for a plain register, several for a history record, none for the key."""
     record = RECORDS.get(vreg)
@@ -516,7 +586,15 @@ def decode_values(vreg: int, raw: Any) -> list[Value]:
         except (ValueError, TypeError):
             return []
     value = decode_vreg(vreg, raw)
-    return [value] if value is not None else []
+    if value is None:
+        return []
+    derived = DERIVED.get(vreg)
+    if derived is None:
+        return [value]
+    try:
+        return [value, Value(derived.name, derived.friendly, derived.unit, derived.decode(raw))]
+    except (ValueError, TypeError):
+        return [value]
 
 
 def known_vreg(vreg: int) -> bool:
@@ -524,5 +602,5 @@ def known_vreg(vreg: int) -> bool:
 
 
 POLLED_VREGS: tuple[int, ...] = tuple(
-    dict.fromkeys(_POLLED_BASE + tuple(w.vreg for w in WRITABLE.values()) + (0xED8C, 0x0202, 0x0090, 0x0150) + tuple(RECORDS))
+    dict.fromkeys(_POLLED_BASE + tuple(w.vreg for w in WRITABLE.values()) + (0xED8C, 0x0202, 0x0090, 0x0150, 0xEDB3, 0x0207, 0xEDA8) + tuple(RECORDS))
 )
