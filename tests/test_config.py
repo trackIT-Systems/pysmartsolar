@@ -178,3 +178,19 @@ def test_paths_in_the_config_expand_the_home_directory(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     config = parse_config({"daemon": {"socket": "~/s.sock", "state_dir": "~/state", "csv": {"path": "~/data"}}})
     assert config.daemon.socket == tmp_path / "s.sock" and config.daemon.state_dir == tmp_path / "state" and config.daemon.csv.path == tmp_path / "data"
+
+
+def test_the_default_up_to_1_2_is_read_while_the_new_default_is_missing(tmp_path, monkeypatch):
+    import smartsolar.config as config
+
+    new, old = tmp_path / "etc" / "smartsolar.yml", tmp_path / "boot" / "smartsolar.yml"
+    monkeypatch.setattr(config, "DEFAULT_CONFIG_PATH", new)
+    monkeypatch.setattr(config, "LEGACY_CONFIG_PATH", old)
+    assert config.resolve_config_path() == new  # neither exists: the error names the new default
+    old.parent.mkdir()
+    old.write_text("gatt:\n  mode: poll\n")
+    assert load_config().path == old and load_config().gatt.mode == "poll"
+    new.parent.mkdir()
+    new.write_text("{}\n")
+    assert load_config().path == new
+    assert config.resolve_config_path(tmp_path / "x.yml") == tmp_path / "x.yml"

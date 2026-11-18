@@ -10,9 +10,11 @@ import yaml
 from smartsolar.errors import ConfigError
 from smartsolar.instant import KEY_LEN
 
-from smartsolar.platform import DEFAULTS
+from smartsolar.platform import DEFAULTS, IS_LINUX
 
 DEFAULT_CONFIG_PATH = DEFAULTS.config
+# The default on Linux up to 1.2: read while the new default does not exist
+LEGACY_CONFIG_PATH = Path("/boot/firmware/smartsolar.yml") if IS_LINUX else None
 DEFAULT_SOCKET_PATH = DEFAULTS.socket  # a path, or tcp://127.0.0.1:port where there are no Unix sockets
 DEFAULT_STATE_DIR = DEFAULTS.state_dir
 DEFAULT_DATA_DIR = DEFAULTS.data_dir
@@ -115,6 +117,8 @@ class AppConfig:
 def resolve_config_path(explicit: Path | None = None) -> Path:
     if explicit is not None:
         return explicit.expanduser()
+    if LEGACY_CONFIG_PATH is not None and not DEFAULT_CONFIG_PATH.is_file() and LEGACY_CONFIG_PATH.is_file():
+        return LEGACY_CONFIG_PATH
     return DEFAULT_CONFIG_PATH
 
 

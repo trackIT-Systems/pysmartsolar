@@ -12,6 +12,8 @@ columns:
 Measurements come first (``LEADING``), then the remaining values in table order,
 then the columns added later (``TRAILING``), so that a CBOR array keeps the
 positions of the older ones. A reading lacking a value has null in its column.
+Within a major version columns are only appended (docs/outputs.md, Compatibility);
+tests/test_columns.py pins the columns of 1.3.0.
 """
 
 from __future__ import annotations
@@ -66,7 +68,8 @@ LEADING = (
     "device_mode",
 )
 
-# Columns added after the first release, in the order they were added: always last. Append new ones.
+# Columns added after the first release, in the order they were added: always last. Append new ones, also
+# for a new value of a source table, which would otherwise land in the middle.
 TRAILING = (
     "channel_1_current_ma",
     "pv_power_trend",

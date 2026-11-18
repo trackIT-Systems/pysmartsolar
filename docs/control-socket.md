@@ -48,7 +48,7 @@ CLI exit codes: 0 ok, 1 the daemon answered with an error, 2 usage error (includ
 No arguments. The state of everything the daemon does, without any radio or cable traffic.
 
 ```json
-{"version": "1.2.0", "uptime_s": 1, "id": "HQ00000TEST", "ble": true,
+{"version": "1.3.0", "uptime_s": 1, "id": "HQ00000TEST", "ble": true,
  "serial": {"port": "/dev/ttyUSBvd*", "state": "open", "connected": true, "hex": true, "serial": "HQ00000TEST",
             "product_id": "0xA053", "firmware": "1.64", "last_block_age_s": 0.0, "opens": 1, "losses": 0,
             "blocks": 120, "bad_checksum": 1, "resyncs": 0, "hex_frames": 0, "bad_hex": 0, "hex_requests": 0,

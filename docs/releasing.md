@@ -1,6 +1,13 @@
 # Releasing
 
-Versions follow [Semantic Versioning](https://semver.org/): a breaking change of the CLI, the config file, the MQTT/CSV output or the socket protocol is a major version; new features are minor; fixes are patch.
+Versions follow [Semantic Versioning](https://semver.org/). The public interface is the CLI, the config file, the MQTT and CSV outputs and the control socket. Within a major version, what exists is kept and new things are added:
+
+- **Kept:** commands and options of the CLI, config keys and the values they take, output columns with their position and unit, event names and `detail` keys, socket commands, arguments and result fields. None is removed or renamed, and none changes its meaning.
+- **Added in a minor version:** new commands, options, config keys and values, new columns (appended: `TRAILING` in `src/smartsolar/columns.py`, see [outputs.md](outputs.md#compatibility)), events, `detail` keys, socket commands and result fields. Consumers ignore what they do not know.
+- **Patch:** fixes. A value that was decoded wrongly is a fix, even though consumers see a different number.
+- **Major:** removing, renaming or changing the meaning of anything above.
+
+The outputs are covered from 1.3.0 on, the rest since 1.0.0. 1.3.0 replaced the MQTT and CSV outputs of 1.2 as a whole; tsOS ships pysmartsolar pinned and announced that change with the tsOS release that brought it.
 
 A release is made by a git tag; GitHub Actions (`.github/workflows/release.yml`) does the rest.
 

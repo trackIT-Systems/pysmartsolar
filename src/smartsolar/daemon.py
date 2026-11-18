@@ -20,7 +20,7 @@ from typing import Any
 
 from smartsolar import __version__
 from smartsolar.ble import BleBackend
-from smartsolar.config import AppConfig, load_config
+from smartsolar.config import DEFAULT_CONFIG_PATH, LEGACY_CONFIG_PATH, AppConfig, load_config
 from smartsolar.errors import BadRequest, ConfigError, ConnectError, NoDataError, NotConnectedError, ProtocolError, SmartsolarError
 from smartsolar.failures import Failures
 from smartsolar.gatt_manager import GattManager
@@ -647,6 +647,8 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         log.critical("Cannot load the configuration: %s", exc)
         return 1
+    if args.config is None and config.path == LEGACY_CONFIG_PATH:
+        log.warning("Reading the configuration from %s, the default up to 1.2: move it to %s", LEGACY_CONFIG_PATH, DEFAULT_CONFIG_PATH)
     logging.getLogger().setLevel(logging.DEBUG if args.verbose else getattr(logging, config.daemon.log_level))
     try:
         return asyncio.run(Daemon(config).run())

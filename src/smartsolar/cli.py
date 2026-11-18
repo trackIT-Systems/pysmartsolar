@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from smartsolar import __version__, instant, ipc
-from smartsolar.config import DEFAULT_CONFIG_PATH, DEFAULT_SOCKET_PATH, load_config, parse_key
+from smartsolar.config import DEFAULT_SOCKET_PATH, load_config, parse_key, resolve_config_path
 from smartsolar import profiles
 from smartsolar.errors import AdvertError, ConfigError, DaemonError, DaemonUnreachable, InvalidWriteError, ProfileError, SmartsolarError
 from smartsolar.tracker import advert_values
@@ -208,7 +208,7 @@ def resolve_socket(args: argparse.Namespace) -> Path | str:
         return args.socket
     if args.config is not None:
         return load_config(args.config).daemon.socket  # an explicit config must be usable
-    if DEFAULT_CONFIG_PATH.is_file():
+    if resolve_config_path().is_file():
         try:
             return load_config().daemon.socket
         except ConfigError:
