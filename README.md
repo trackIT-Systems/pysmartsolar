@@ -1,167 +1,63 @@
 # smartsolar
 
 [![Tests](https://github.com/trackIT-Systems/pysmartsolar/actions/workflows/ci.yml/badge.svg)](https://github.com/trackIT-Systems/pysmartsolar/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/trackIT-Systems/pysmartsolar)](https://github.com/trackIT-Systems/pysmartsolar/releases/latest)
+[![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue)](pyproject.toml)
+[![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)](docs/platforms.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-A daemon and a CLI for Victron SmartSolar charge controllers over Bluetooth Low Energy and over the VE.Direct cable, for autonomous sensor nodes (Raspberry Pi). `smartsolard` follows one SmartSolar permanently and reports its values to a CSV file and to MQTT (JSON and CBOR). `smartsolar` talks to the running daemon: cached and live values, key, reconnect, scan, settings.
+A daemon and a CLI for Victron SmartSolar charge controllers over Bluetooth Low Energy and the VE.Direct cable, made for autonomous sensor nodes (Raspberry Pi, [tsOS](https://github.com/trackIT-Systems/tsOS-base)). `smartsolard` follows one charger and reports its values to CSV files and MQTT; `smartsolar` talks to the running daemon.
 
-> **Caution:** the GATT part of this project is based on reverse engineering. Writing is limited to a short list of registers (see [Writing](#writing)); use it only if you understand the effect.
+> **Caution:** the GATT part is based on reverse engineering. Writing is limited to a short list of settings ([docs/writing.md](docs/writing.md)); use it only if you understand the effect.
 
-## Why advertisements, and GATT only on top
+## Features
 
-A GATT connection to a SmartSolar is unusable while the Raspberry Pi's 2.4 GHz Wi-Fi access point is up: the Wi-Fi and Bluetooth radios share one chip, and links are set up and then lost within a second (0 usable links in 26 attempts; with the access point down, 10 of 10 connected in half a second). The **Instant Readout** advertisements are not affected: the device broadcasts its main values encrypted, about 4 times a second, and a passive scan receives them reliably with the access point up (2447 of 2447 advertisements decrypted in 10 minutes). So:
-
-* The advertisements are always the main data source. No connection, no pairing.
-* GATT is optional (`gatt.mode`) for the values that are not in the advertisements (firmware, uptime, load output, ...), and it fetches the Instant Readout key once if you did not configure it.
-* A charger with Instant Readout disabled can only be read over GATT. While `gatt.mode` is `off`, the daemon reads it in `gatt.fallback` (default `hold`; `off` leaves it alone). With the access point up this takes many attempts: even its advertisements are mostly not reported then (see [docs/quirks.md](docs/quirks.md)). Once a `hold` connection is up, it stays.
-
-The measurements behind this, and everything else that was found out about the device, are in [docs/](docs/README.md), starting with [docs/quirks.md](docs/quirks.md).
-
-## VE.Direct cable
-
-Some systems have the charger on a VE.Direct cable (FTDI USB, `/dev/ttyUSBvd<n>` on tsOS), with or without Bluetooth. The daemon can use either interface or both; each is its own block of readings (`source` in MQTT, `block` in the CSV): `advert`, `gatt` and `vedirect`.
-
-```yaml
-serial:
-  enabled: true
-  port: /dev/ttyUSBvd*    # a port, or a pattern: the first match (lowest index) is used, looked up at every open
-ble:
-  enabled: false          # a system without Bluetooth: nothing of the BLE stack is started
-```
-
-* **Text blocks.** The charger pushes a block of text about once a second (battery and panel voltage, current, power, state, error, yields, load output, serial number; 19200 baud). Each valid block (checksum) becomes a reading. A block can be lost now and then (the device sometimes garbles the block after a burst of HEX frames); `smartsolar status` counts them.
-* **HEX protocol.** The same cable reads and writes the settings registers (the same ids and encodings as over GATT, so `write`, `profile diff` and `profile load` work unchanged). Without Bluetooth this is the only way to provision a charger. A request makes the device cut the text block it is sending, so it is only used when you ask (`serial.hex: false` keeps the daemon from ever sending a byte).
-* **Which way settings take.** `daemon.registers: auto` uses the cable when it is connected and falls back to GATT; `serial` and `gatt` insist on one. `--via serial|gatt` overrides it per command. `rx_port_function` and `tx_port_function` are never written over the cable (a wrong value could cut the connection).
-* **Identity.** Devices are called by their serial number everywhere (MQTT topic `{host}/smartsolar/{serial}/json`, CSV `device`). The cable sends it (`SER#`); over Bluetooth it is part of the name (`SmartSolar HQ22294ZGEU`). With both interfaces the BLE device with the cable's serial number is the one that is followed, whatever its signal strength. The MAC address is only used when no serial number is known.
-* **One reader.** The port is opened exclusively. Do not run another program that reads it (the old `vedirect_dump` of mqttutil, for example): two readers take bytes from each other and the blocks fail their checksums.
-* The charger's TX port function must stay `communication` (the default); `rx_port_function` and `tx_port_function` can only be changed over Bluetooth.
+* **Instant Readout:** decrypts the charger's advertisements with a passive scan, which keeps working while the Pi's 2.4 GHz access point is up. No connection and no pairing needed.
+* **GATT (VE.Smart):** optional, for everything the advertisements lack (settings, history, firmware, load output), held open or polled. It reads chargers with Instant Readout disabled, and fetches the Instant Readout key once if it is not configured.
+* **VE.Direct cable:** text blocks and the HEX protocol, with the same registers as GATT; it works with or without Bluetooth.
+* **Outputs:** the same columns from every source, as CSV (one file per day) and MQTT (CSV, JSON and CBOR), stable within a major version ([docs/outputs.md](docs/outputs.md)).
+* **Settings:** checked writes, read back; VictronConnect settings files (`.vcsf`) can be shown, compared, loaded and saved.
 
 ## Install
 
-Python 3.12+. Linux (BlueZ; the Raspberry Pi with tsOS is the tested platform), macOS and Windows; see [docs/platforms.md](docs/platforms.md) for what differs (pairing, device names, control socket). BlueZ is not needed with `ble.enabled: false`; pyserial is used for the cable.
+Python 3.12+ on Linux (BlueZ; the tested platform is a Raspberry Pi with tsOS), macOS or Windows ([docs/platforms.md](docs/platforms.md)).
 
 ```bash
-pip install -e .          # smartsolard, smartsolar
+pip install -e .
 sudo install -D config/smartsolar.yml /etc/smartsolar/smartsolar.yml
-smartsolard --config config/smartsolar.yml
+smartsolard                       # or: smartsolard --config FILE
+smartsolar status
 ```
 
-## Instant Readout key
-
-Each device has a 16 byte key. Either put it in the config (VictronConnect: device > settings > Product info > Instant readout via Bluetooth > Show) or leave it out: the daemon then connects once over GATT, pairs with `gatt.passkey`, reads the key (register `0xEC65`) and stores it in `daemon.state_dir` (mode 0600). That one connection needs a working link, so run it with the access point down, or retry until it works (failed attempts are retried with a growing delay). `smartsolar fetch-key` triggers it by hand. If the device is reset and the stored key stops matching, it is dropped and fetched again; a wrong key in the config is only reported (`smartsolar status`: `key ... mismatch`).
-
-The key and the passkey are never logged and never published.
-
-## Daemon
-
-`smartsolard [--config FILE]`, default config `/etc/smartsolar/smartsolar.yml`, see [config/smartsolar.yml](config/smartsolar.yml).
-
-* **Device:** the configured `ble.address`, otherwise the strongest SmartSolar (solar charger records of other Victron devices are listed but never selected). A charger with Instant Readout disabled only sends its product id; it is recognised by that id (or its `SmartSolar` name) and selected unless both `gatt.mode` and `gatt.fallback` are `off` (or when it is pinned), but a charger with Instant Readout comes first. The selection is reviewed every `ble.rescan_interval_s`; another device must be `ble.switch_hysteresis_db` stronger to replace the current one.
-* **Advertisements:** decoded as they arrive; the latest reading is published every `advert.publish_interval_s` (the device sends a new one about once a second). Fields: state, charger error, battery voltage and current, yield today, PV power, load current; values the device reports as not available are `null`.
-* **GATT** (`gatt.mode`):
-  * `off`: no connection, except to fetch a missing key. A charger with Instant Readout disabled is read in `gatt.fallback` (default `hold`) instead.
-  * `hold`: keep a connection and publish the values the device pushes every `gatt.publish_interval_s`. A ping every `gatt.keepalive_s` keeps it open (the device closes the link 10 s after the last ping).
-  * `poll`: connect every `gatt.poll_interval_s`, collect the values, publish, disconnect.
-
-  The device keeps advertising while a GATT connection is open, so the advertisement data stays fresh in `hold` and `poll`. A charger with Instant Readout disabled may stop advertising while connected, and its adverts are mostly not reported while the access point is up; for it the scan watchdog is off, and a connect falls back to the device BlueZ knows from its last advert (for good once bonded) when the lookup does not find it again.
-
-  While a connection is being opened the advertisement scan is paused (BlueZ rejects connects while the same client scans), so with an access point up on 2.4 GHz the connection attempts of `hold` and `poll` cost advertisement readings (in a test, no reading for the first minute while the first attempts timed out). Failed attempts are retried with a jittered, growing delay, and nothing here touches Wi-Fi. Use `gatt.mode: off` there.
-* **MQTT:** every reading as CSV, JSON and CBOR on `{host}/smartsolar/{serial}/csv|json|cbor`, with the same columns whichever source it came from: `device`, then the values under their names (`battery_voltage`, `pv_power`, `yield_today`, ...). No time and nothing retained: the receiver stamps a reading on arrival. CBOR is a list in column order, about 145 bytes per reading, for cellular links. At most one reading per device every `mqtt.publish_interval_s` (300 s), the best source's newest. Events on `{host}/smartsolar/events/...`.
-* **CSV:** one file per day, `/data/<host>/smartsolar/<host>_<date>_smartsolar.csv`, with `time` first and the same columns plus `block` (`advert`, `gatt` or `vedirect`). It gets every reading taken once the clock is trusted; before that, readings only go over MQTT.
-* Topics, columns with units, examples and the clock handling: [docs/outputs.md](docs/outputs.md).
+The config file explains every key: [config/smartsolar.yml](config/smartsolar.yml). Give the Instant Readout key there (VictronConnect: device > settings > Product info > Instant readout via Bluetooth > Show), or leave it out and the daemon fetches it over GATT once. For a charger on a VE.Direct cable, set `serial.enabled: true`. How the daemon picks a charger, uses GATT and the cable, and why: [docs/daemon.md](docs/daemon.md).
 
 ## CLI
 
 ```
 smartsolar status                  device, key, advertisement, GATT and cable state
 smartsolar cached [advert|gatt|vedirect]   last values the daemon has (no radio traffic)
-smartsolar read [advert|gatt|vedirect]     newest advertisement values; GATT: hold = now, poll = connects now; vedirect: newest text block
+smartsolar read [advert|gatt|vedirect]     newest values; GATT in poll mode connects now
 smartsolar scan                    Victron devices seen, with model, record type and key state
-smartsolar rescan                  choose the device again now
-smartsolar reconnect               drop the GATT connection and connect again
-smartsolar write NAME=VALUE ... [--via serial|gatt]   change settings over the cable or GATT (see Writing)
-smartsolar profile show|diff|load|save FILE.vcsf   VictronConnect settings files (see Profiles)
-smartsolar history [--days N] [--via serial|gatt]   the charger's day records: today and up to 30 days before
+smartsolar rescan | reconnect      choose the device again | drop and reopen the GATT link
+smartsolar write NAME=VALUE ... [--via serial|gatt]   change settings (docs/writing.md)
+smartsolar profile show|diff|load|save FILE.vcsf   VictronConnect settings files
+smartsolar history [--days N]      the charger's day records: today and up to 30 days before
 smartsolar fetch-key [--show]      read the Instant Readout key over GATT now
 smartsolar decode --key HEX DATA   decode one advertisement offline
-smartsolar vregs [--writable]      the registers decoded over GATT, or the ones `write` can change
+smartsolar vregs [--writable]      the registers, or the ones `write` can change
 ```
 
-`--json` prints the raw result, `--socket` / `--config` select the daemon. Exit codes: 0 ok, 1 daemon error, 2 usage error, 3 daemon unreachable. The CLI and the daemon talk newline-delimited JSON over a Unix socket (`daemon.socket`); the commands, arguments and results are documented in [docs/control-socket.md](docs/control-socket.md).
+`--json` prints the raw result. Exit codes: 0 ok, 1 daemon error, 2 usage error, 3 daemon unreachable. The control socket's API: [docs/control-socket.md](docs/control-socket.md).
 
-## Writing
+## Documentation
 
-`smartsolar write NAME=VALUE ...` changes settings through the daemon, over the VE.Direct cable if it is connected, else over GATT (it connects on demand in `off` and `poll` mode and uses the open link in `hold`); see [VE.Direct cable](#vedirect-cable) for `--via`. Only the settings in `smartsolar vregs --writable` can be written; everything else, including the key, the passkey, the keepalive, restore-defaults and the system voltage, is refused before anything is sent.
-
-```
-smartsolar write device_mode=off
-smartsolar write float_voltage=13.6 absorption_voltage=14.4 --yes
-smartsolar vregs --writable
-```
-
-| Setting | Values |
-| --- | --- |
-| `device_mode` | `on`, `off` (the charger) |
-| `battery_type` | `user` or a factory preset (`preset1` to `preset8`) |
-| `battery_max_current`, `tail_current` | A |
-| `absorption_voltage`, `float_voltage`, `equalisation_voltage` | V, inside the range the device allows |
-| `temperature_compensation` | mV/K, at most ±21 for a 12 V system |
-| `absorption_time_limit`, `equalisation_duration` | hours |
-| `adaptive_mode`, `equalisation_auto_stop` | `on`, `off` |
-| `auto_equalise_days`, `equalisation_current_percent`, `rebulk_voltage_offset`, `low_temperature_level`, `low_temperature_current` (`none`: the maximum) | |
-| `load_output_control` | `off`, `batterylife`, `conventional1`, `conventional2`, `on`, `user1`, `user2`, `aes` (`alt1`, `alt2` are old names) |
-| `load_user_high_voltage`, `load_user_low_voltage`, `load_aes_timer` | V, V, minutes |
-| `rx_port_function`, `tx_port_function` | the VE.Direct port functions |
-| `instant_readout` | `on`, `off`: whether the advertisements carry the encrypted live data. A setting of the Bluetooth part, so only over GATT (`auto` takes GATT for it) |
-| `custom_name` | text, up to 80 bytes UTF-8: the name VictronConnect shows |
-| `bms_present` | `absent`, `present` (the charger sets `present` itself when it sees a BMS) |
-| `identify` | `on`, `off`: the charger blinks its LEDs until set `off` again |
-
-It asks for confirmation on a terminal (`--yes` skips it, and is required without one). Every write is checked twice: the device must echo the value, and a read-back must show it. A write the device does not accept gets **no answer at all**, which is reported as a failure. The old and the new value are shown, and every write is logged as a `register_written` event (CSV and MQTT). Exit code 1 if a write failed or the read-back differs.
-
-**Safety checks before a write**, from Victron's VE.Direct protocol document: the charge voltages are only taken if `battery_type` is `user` (otherwise the write is refused with a hint; set the type first), and a voltage outside the range the device reports (8 to 17.4 V for a 12 V system) or a temperature compensation beyond ±21 mV/K makes the device raise **error 119** (settings data invalid), which only a factory reset plus a power cycle clears. `smartsolar` reads the allowed range from the device and refuses such values. The settings are stored in non-volatile memory: do not write them in a loop.
-
-`load_output_control` is the load output algorithm of the VictronConnect load output settings: `batterylife` is the self-adapting default, `conventional1` switches off below 11.1 V and on above 13.1 V, `conventional2` below 11.8 V and above 14.0 V (12 V system; multiplied for 24 V and 48 V), `on` and `off` are always on and always off, and `user1`, `user2` and `aes` (Automatic Energy Selector) use `load_user_high_voltage` and `load_user_low_voltage` (and the AES timer). Except for `on` and `off`, the load output follows an algorithm only after a 2-minute delay. Whether `device_mode=off` stops charging was only seen as the register value (the test happened at night), and it only works while remote on/off is enabled (register `0x0202`, bit 1; set by default on firmware 1.42 and newer).
-
-Not exposed on purpose: restore-defaults and clear commands, the system voltage, the Instant Readout key and the passkey. The streetlight timer, the relay, the Bluetooth switch (`ble_mode`: off would cut the link to the charger) and the PIN code are not covered. Other registers can be added to `WRITABLE` in `src/smartsolar/vreg.py`.
-
-## Profiles
-
-The folder [profiles/](profiles/) has settings files made with VictronConnect (SmartSolar 75/10 AGM and LiFePO4, 75/15 LiFePO4). They are complete app files and contain the history and serial number of the charger they were saved from; only the `/Settings/` part is used.
-
-A profile is a **VictronConnect settings file** (`.vcsf`): the file the app saves with "Save settings to file" and loads onto a charger of the same model. `smartsolar` reads those files and applies their settings over GATT; it can also save the settings of the charger to such a file.
-
-```
-smartsolar profile show "profiles/VE MPPT 75_15 LiFePo Profile.vcsf"   what the file sets (works without the daemon)
-smartsolar profile diff FILE.vcsf                            compare with the charger
-smartsolar profile load FILE.vcsf                            check, diff, confirm, write only what differs, read back
-smartsolar profile load FILE.vcsf --dry-run                  the same without writing
-smartsolar profile load FILE.vcsf --ignore-device            also for a file made for another product id or newer firmware
-smartsolar profile save FILE.vcsf                            save the charger's settings (experimental)
-```
-
-The file is a `VCCF` header and a zlib-compressed JSON document with VictronConnect's model of one device: the settings under `/Settings/`, but also live values, history and the serial number. Only the `/Settings/` keys are used; the others are ignored. 22 settings are imported (the table above, except the device mode); the other `/Settings/` keys (streetlight, relay, BMS, auxiliary input) are counted and reported but not imported, because their registers were not checked yet. The mapping was checked against a SmartSolar 75/15 that was configured like the sample file (`tests/data/ve-mppt-75-15-lifepo4.vcsf`): reading the registers gave the same values for every setting of the file, and `profile diff` of the unmodified file says "nothing to change".
-
-`profile load` refuses to write anything if the file does not fit the charger: another product id, a firmware older than the file's minimum, or a different system voltage (the file's charge voltages are for another battery voltage). For provisioning with a file made for another model, `--ignore-device` turns the product id and firmware mismatches into warnings; the system voltage mismatch always blocks, and the charger still refuses values outside its own ranges. It writes the battery type first, and if the file selects a factory preset instead of `user` it only writes the type, because the charge voltages are part of the preset. Settings the charger does not report (older firmware) are left out with a note. The same range and battery type checks as for `write` apply.
-
-`profile save` writes the same container with the settings of the charger, the product id, the firmware as the minimum version and the system voltage. **This export is experimental:** `smartsolar` reads it back, but whether VictronConnect accepts such a file was not tested, because the file lacks the live values and history of a file made by the app. Use it to restore the charger with `profile load`, and do not rely on it for the app.
-
-## GATT protocol
-
-Service `306b0001-b081-4037-83dc-e59fcc3cdfd0`, three characteristics (`0021` control, `0024` lastData, `0027` data). Pairing: SMP passkey, default `000000`. A BlueZ agent that answers the passkey request is registered from before the connect until pairing is done (`dbus-fast`). The service speaks VE.Smart, VictronConnect's protocol: CBOR messages (`[opcode][instance][arguments]`) in chunks with credit-based flow control on the control characteristic; the charger's registers are in one instance of the device's tree (3 on a SmartSolar 75/15). The protocol is in `src/smartsolar/vesmart.py`, the registers in `src/smartsolar/vreg.py`, the register list is `smartsolar vregs`. The protocol, the quirks of the device and what is still unknown are written down in [docs/](docs/README.md).
-
-## Layout
-
-`src/smartsolar/`: `instant.py` (Instant Readout decoding), `vreg.py` (GATT records and registers), `tracker.py` (device selection, decoding), `keys.py`, `gatt_session.py` (one link), `gatt_manager.py` (modes, retries), `daemon.py`, `cli.py`, `server.py` and `ipc.py` (control socket), `outputs/`, `ble/` (transport interface; only `ble/bleak_backend.py` and `ble/agent.py` import bleak and dbus-fast). `tests/` runs without hardware against a fake backend (`tests/fakes.py`).
-
-## Releases
-
-Semantic versioning; releases are made by pushing a tag `vX.Y.Z`, see [docs/releasing.md](docs/releasing.md) and the [changelog](CHANGELOG.md).
+[docs/](docs/README.md) has the daemon, the outputs, writing and profiles, the protocols (Instant Readout, GATT, VE.Direct, `.vcsf`), the quirks of the device and what is still unknown. Releases follow semantic versioning ([docs/releasing.md](docs/releasing.md), [changelog](CHANGELOG.md)). `tests/` runs without hardware against fakes.
 
 ## Victron Energy
 
 The SmartSolar charge controllers, their firmware, VictronConnect and the protocols they speak are the work and the intellectual property of [Victron Energy B.V.](https://www.victronenergy.com/) Victron, SmartSolar, BlueSolar, VictronConnect, VE.Direct, VE.Smart and Instant Readout are their names and trademarks. This project is not made, endorsed or supported by Victron Energy.
 
-Its only goal is to let a sensor node work with these chargers: read what they measure and keep their settings, as VictronConnect does. It is written with respect for Victron's work and in thanks for their openness: they publish the VE.Direct protocol and the Instant Readout format, announced the Bluetooth protocol to the community, and answer questions about it in their forum. Nothing of Victron's is redistributed here: no firmware, no code of VictronConnect and none of its data files (such as its register dictionary); the protocol descriptions in [docs/](docs/README.md) are our own, written to interoperate. For anything beyond reading values and the few settings listed above, use VictronConnect.
+Its only goal is to let a sensor node work with these chargers: read what they measure and keep their settings, as VictronConnect does. It is written with respect for Victron's work and in thanks for their openness: they publish the VE.Direct protocol and the Instant Readout format, announced the Bluetooth protocol to the community, and answer questions about it in their forum. Nothing of Victron's is redistributed here: no firmware, no code of VictronConnect and none of its data files (such as its register dictionary); the protocol descriptions in [docs/](docs/README.md) are our own, written to interoperate. For anything beyond reading values and the few settings `smartsolar` can write, use VictronConnect.
 
 ## Credits
 

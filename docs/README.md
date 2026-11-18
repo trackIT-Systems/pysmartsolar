@@ -4,6 +4,9 @@ Technical notes on how the SmartSolar speaks, what was measured on a real device
 
 | Page | Content |
 |---|---|
+| [daemon.md](daemon.md) | How the daemon reads a charger: why advertisements first, device selection, GATT modes, the cable, the key, outputs |
+| [writing.md](writing.md) | Writing settings: the list, the safety checks, the load output; settings files (profiles) |
+| [outputs.md](outputs.md) | MQTT topics, CSV files, the columns with their units, compatibility |
 | [instant-readout.md](instant-readout.md) | The encrypted advertisements: layout, decryption, sentinels |
 | [gatt-protocol.md](gatt-protocol.md) | The GATT service: framing, requests, registers, pairing, keepalive, writes |
 | [vedirect-protocol.md](vedirect-protocol.md) | The VE.Direct cable: text blocks, HEX frames, quirks |
@@ -14,4 +17,4 @@ Technical notes on how the SmartSolar speaks, what was measured on a real device
 | [unknowns.md](unknowns.md) | Magic values that are replayed without being understood, and open questions |
 | [releasing.md](releasing.md) | Versioning and how a release is made |
 
-Everything was verified on one SmartSolar 75/15 (product id `0xA053`, firmware 1.64) unless a page says otherwise. Sources: Bluetooth traces of VictronConnect, Victron's "VE.Direct protocol, BlueSolar and SmartSolar MPPT chargers" (rev 18) and tests on the device.
+Everything was verified on one SmartSolar 75/15 (product id `0xA053`, firmware 1.64) unless a page says otherwise. Sources: VictronConnect 6.43 and how it talks to a charger, Victron's "VE.Direct protocol, BlueSolar and SmartSolar MPPT chargers" (rev 18) and tests on the device.
