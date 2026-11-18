@@ -24,6 +24,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
+    "pytest-cov",
     "dbus-fast; sys_platform == 'linux'",
 ]
 
@@ -43,3 +44,11 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.coverage.run]
+source = ["smartsolar"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

@@ -221,3 +221,23 @@ def test_a_failing_sink_is_logged_with_a_traceback_once_and_its_recovery_once(ca
     assert [(r.levelname, r.exc_info is not None) for r in caplog.records] == [("ERROR", True), ("DEBUG", False), ("DEBUG", False), ("INFO", False)]
     assert caplog.records[0].getMessage() == "Output Flaky failed in emit_reading"
     assert caplog.records[-1].getMessage() == "Output Flaky works again in emit_reading"
+
+
+def test_the_default_scheduler_uses_the_event_loop_or_a_timer_thread():
+    import asyncio
+    import threading
+
+    from smartsolar.outputs import mqtt as mqtt_module
+
+    fired = threading.Event()
+    timer = mqtt_module.default_scheduler(0.01, fired.set)  # no event loop: a timer thread
+    assert isinstance(timer, threading.Timer) and timer.daemon and fired.wait(2.0)
+
+    async def go():
+        done = asyncio.Event()
+        handle = mqtt_module.default_scheduler(0.01, done.set)
+        assert isinstance(handle, asyncio.TimerHandle)
+        await asyncio.wait_for(done.wait(), 2.0)
+
+    asyncio.run(go())
+    assert mqtt_module.make_client() is not None

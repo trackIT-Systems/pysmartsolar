@@ -8,7 +8,9 @@ from smartsolar.ble import bleak_backend as bb
 from smartsolar.errors import ConnectError, LinkError, NotConnectedError, PairingError
 from smartsolar.vreg import CHAR_UUIDS
 
-from fakes import A, advert_data, run
+from fakes import A, advert_data, run, until
+
+WATCH_BLUETOOTHD = bb.watch_bluetoothd  # before the fixture below stands in for it
 
 
 def agent_module(monkeypatch):
@@ -171,6 +173,80 @@ def test_the_agent_answers_the_passkey_request():
     pin = PasskeyAgent.RequestPinCode.__wrapped__
     assert passkey(PasskeyAgent(0), "/org/bluez/hci0/dev_x") == 0 and pin(PasskeyAgent(0), "/x") == "000000"
     assert passkey(PasskeyAgent(123456), "/x") == 123456 and pin(PasskeyAgent(42), "/x") == "000042"
+
+
+def test_the_agent_accepts_the_other_requests():
+    pytest.importorskip("dbus_fast")
+    from smartsolar.ble.agent import PasskeyAgent
+
+    agent = PasskeyAgent(0)
+    for name, args in [("Release", ()), ("DisplayPasskey", ("/x", 1, 0)), ("RequestConfirmation", ("/x", 1)), ("RequestAuthorization", ("/x",)), ("Cancel", ())]:
+        assert getattr(PasskeyAgent, name).__wrapped__(agent, *args) is None
+
+
+class FakeAgentBus:
+    """The system bus as registered_agent uses it: export, introspect, AgentManager1 calls, disconnect."""
+
+    def __init__(self, unregister_error=None):
+        self.calls = []
+        self.unregister_error = unregister_error
+
+    def __call__(self, bus_type=None):
+        return self
+
+    async def connect(self):
+        self.calls.append("connect")
+        return self
+
+    def export(self, path, interface):
+        self.calls.append(("export", path, interface.passkey if hasattr(interface, "passkey") else interface._passkey))
+
+    async def introspect(self, service, path):
+        self.calls.append(("introspect", service, path))
+        return "xml"
+
+    def get_proxy_object(self, service, path, introspection):
+        bus = self
+
+        class Manager:
+            async def call_register_agent(self, path, capability):
+                bus.calls.append(("register", path, capability))
+
+            async def call_request_default_agent(self, path):
+                bus.calls.append(("default", path))
+
+            async def call_unregister_agent(self, path):
+                bus.calls.append(("unregister", path))
+                if bus.unregister_error is not None:
+                    raise bus.unregister_error
+
+        return SimpleNamespace(get_interface=lambda name: bus.calls.append(("interface", name)) or Manager())
+
+    def disconnect(self):
+        self.calls.append("disconnect")
+
+
+@pytest.mark.parametrize("unregister_error", [None, OSError("bluetoothd gone")], ids=["unregistered", "unregister fails"])
+def test_the_agent_is_registered_as_default_and_unregistered_after(monkeypatch, unregister_error):
+    pytest.importorskip("dbus_fast")
+    from smartsolar.ble import agent
+
+    bus = FakeAgentBus(unregister_error)
+    monkeypatch.setattr(agent, "MessageBus", bus)
+
+    async def go():
+        async with agent.registered_agent(123456):
+            assert bus.calls == [
+                "connect",
+                ("export", agent.AGENT_PATH, 123456),
+                ("introspect", "org.bluez", "/org/bluez"),
+                ("interface", "org.bluez.AgentManager1"),
+                ("register", agent.AGENT_PATH, "KeyboardDisplay"),
+                ("default", agent.AGENT_PATH),
+            ]
+        assert bus.calls[-2:] == [("unregister", agent.AGENT_PATH), "disconnect"]  # also when unregistering fails
+
+    run(go())
 
 
 def test_scanner_callback_filters_victron_adverts_only():
@@ -669,3 +745,231 @@ def test_a_watch_that_cannot_start_is_told_and_scanning_goes_on(monkeypatch, cap
     assert [r.message for r in caplog.records if "bluetoothd" in r.message] == [
         "Cannot watch for bluetoothd restarts, the scan does not survive one: no system bus"
     ]
+
+
+# -- watching bluetoothd ---------------------------------------------------------------
+
+
+@pytest.fixture
+def system_bus(monkeypatch):
+    """dbus-fast's MessageBus, Message and types as stand-ins (also where dbus-fast is not installed)."""
+    import sys
+    import types
+
+    buses = []
+    kinds = SimpleNamespace(SIGNAL="signal", ERROR="error", METHOD_RETURN="method_return")
+
+    class FakeBus:
+        reply = SimpleNamespace(message_type=kinds.METHOD_RETURN)
+
+        def __init__(self, bus_type=None):
+            self.bus_type = bus_type
+            self.handlers = []
+            self.calls = []
+            self.closed = asyncio.Event()
+
+        async def connect(self):
+            buses.append(self)
+            return self
+
+        def add_message_handler(self, handler):
+            self.handlers.append(handler)
+
+        async def call(self, message):
+            self.calls.append(message)
+            return self.reply
+
+        async def wait_for_disconnect(self):
+            await self.closed.wait()
+
+        def disconnect(self):
+            self.closed.set()
+
+        def owner_changed(self, name, old, new, member="NameOwnerChanged", kind=kinds.SIGNAL):
+            for handler in self.handlers:
+                handler(SimpleNamespace(message_type=kind, member=member, body=[name, old, new]))
+
+    dbus_fast = types.ModuleType("dbus_fast")
+    dbus_fast.BusType = SimpleNamespace(SYSTEM="system")
+    dbus_fast.MessageType = kinds
+    dbus_fast.Message = lambda **kw: SimpleNamespace(**kw)
+    aio = types.ModuleType("dbus_fast.aio")
+    aio.MessageBus = FakeBus
+    monkeypatch.setitem(sys.modules, "dbus_fast", dbus_fast)
+    monkeypatch.setitem(sys.modules, "dbus_fast.aio", aio)
+    return SimpleNamespace(buses=buses, kinds=kinds, FakeBus=FakeBus)
+
+
+def test_watch_bluetoothd_reports_only_bluetoothd_taking_its_name(system_bus):
+    async def go():
+        started = []
+        task = asyncio.create_task(WATCH_BLUETOOTHD(lambda: started.append(1)))
+        await until(lambda: system_bus.buses and system_bus.buses[0].calls)
+        [bus] = system_bus.buses
+        [match] = bus.calls
+        assert bus.bus_type == "system" and match.member == "AddMatch" and match.destination == "org.freedesktop.DBus"
+        assert "member='NameOwnerChanged'" in match.body[0] and "arg0='org.bluez'" in match.body[0]
+
+        bus.owner_changed("org.bluez", ":1.5", "")  # bluetoothd stops
+        bus.owner_changed("org.freedesktop.hostname1", "", ":1.9")  # another service starts
+        bus.owner_changed("org.bluez", "", ":1.7", member="NameLost")
+        bus.owner_changed("org.bluez", "", ":1.7", kind=system_bus.kinds.METHOD_RETURN)
+        assert started == []
+        bus.owner_changed("org.bluez", "", ":1.7")  # bluetoothd is back
+        assert started == [1]
+
+        bus.disconnect()  # the system bus goes away: the watch ends
+        await asyncio.wait_for(task, 1.0)
+
+    run(go())
+
+
+def test_watch_bluetoothd_fails_when_the_bus_refuses_the_match_and_closes_it(system_bus):
+    system_bus.FakeBus.reply = SimpleNamespace(message_type=system_bus.kinds.ERROR, error_name="org.freedesktop.DBus.Error.AccessDenied", body=["no"])
+
+    async def go():
+        with pytest.raises(OSError, match="AccessDenied"):
+            await WATCH_BLUETOOTHD(lambda: None)
+        assert system_bus.buses[0].closed.is_set()
+
+    run(go())
+
+
+def test_a_watch_that_ends_is_told(monkeypatch, caplog):
+    created = []
+    recording_scanner(monkeypatch, created)
+
+    async def ends(on_start):
+        return None
+
+    monkeypatch.setattr(bb, "watch_bluetoothd", ends)
+
+    async def go():
+        await bb.BleakBackend().start_scan(lambda adv: None)
+        await asyncio.sleep(0.01)
+
+    with caplog.at_level("WARNING"):
+        run(go())
+    assert [r.message for r in caplog.records if "bluetoothd" in r.message] == ["The system bus closed: bluetoothd restarts are no longer noticed"]
+
+
+def test_the_scanner_of_an_earlier_bluetoothd_is_dropped_although_stopping_it_fails(monkeypatch, bluez, caplog):
+    created = []
+    recording_scanner(monkeypatch, created)
+
+    async def go():
+        backend = bb.BleakBackend()
+        await backend.start_scan(lambda adv: None)
+        await asyncio.sleep(0)
+
+        async def gone():
+            raise BleakDBusError("org.bluez.Error.DoesNotExist", [])
+
+        backend._scanner.stop = gone
+        bluez[0]()
+        await asyncio.sleep(0.01)
+        assert backend.scan_lost() and backend._discards == set()
+
+    with caplog.at_level("DEBUG", logger="smartsolar.ble.bleak_backend"):
+        run(go())
+    assert [r.levelname for r in caplog.records if "earlier bluetoothd" in r.message] == ["DEBUG"]
+
+
+# -- links and connects that go wrong ---------------------------------------------------
+
+
+def test_link_notifications_that_cannot_be_enabled_fail_the_link():
+    async def go():
+        client = FakeClient()
+
+        async def refuse(uuid, callback):
+            raise BleakError("not permitted")
+
+        client.start_notify = refuse
+        with pytest.raises(LinkError, match="cannot enable notifications on .*: BleakError: not permitted"):
+            await bb.BleakLink(A, client).start_notify(lambda char, data: None)
+
+    run(go())
+
+
+def test_a_pairing_error_of_the_client_and_a_link_already_gone(monkeypatch):
+    async def go():
+        client = FakeClient()
+        client.pair_result = PairingError("refused")
+        link = bb.BleakLink(A, client, agent=SimpleNamespace(__aexit__=lambda *exc: asyncio.sleep(0)))
+        with pytest.raises(PairingError, match="refused"):
+            await link.pair("000000", 1.0)
+
+        async def gone():
+            raise EOFError
+
+        client.disconnect = gone
+        await link.disconnect()  # no error
+
+    run(go())
+
+
+def test_a_cancelled_connect_closes_the_client_and_releases_the_agent(monkeypatch, caplog):
+    events = []
+    patch_connect_env(monkeypatch, events)
+
+    class Hanging(bb.BleakClient):
+        async def connect(self):
+            events.append("connect")
+            await asyncio.sleep(10)
+
+        async def disconnect(self):
+            events.append("client disconnect")
+            raise BleakError("not connected")
+
+    monkeypatch.setattr(bb, "BleakClient", Hanging)
+
+    class StuckAgent:
+        def __init__(self, passkey): ...
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            events.append("agent down")
+            raise BleakError("agent gone")
+
+    monkeypatch.setattr(agent_module(monkeypatch), "registered_agent", StuckAgent, raising=False)
+
+    async def go():
+        from fakes import advert
+
+        task = asyncio.create_task(bb.BleakBackend().connect(advert(), timeout_s=5.0, on_disconnect=lambda: None, passkey="000000"))
+        await until(lambda: "connect" in events)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with caplog.at_level("DEBUG", logger="smartsolar.ble.bleak_backend"):
+        run(go())
+    assert events == ["lookup", "connect", "client disconnect", "agent down"]
+    debug = [r.message for r in caplog.records if r.levelname == "DEBUG"]
+    assert any(m.startswith("Cannot close the BLE connection after a failed connect") for m in debug)
+    assert any(m.startswith("Cannot unregister the pairing agent after a failed connection") for m in debug)
+
+
+def test_a_second_start_keeps_the_scanner_and_a_failed_stop_is_told(monkeypatch, caplog):
+    created = []
+    recording_scanner(monkeypatch, created)
+
+    async def go():
+        backend = bb.BleakBackend()
+        await backend.start_scan(lambda adv: None)
+        await backend.start_scan(lambda adv: None)
+        assert len(created) == 1
+
+        async def refuse():
+            raise BleakDBusError("org.bluez.Error.Failed", ["No discovery started"])
+
+        backend._scanner.stop = refuse
+        await backend.stop_scan()
+        assert backend._scanner is None
+
+    with caplog.at_level("WARNING"):
+        run(go())
+    assert [r.message for r in caplog.records if "stop" in r.message] == ["Cannot stop the BLE scanner: [org.bluez.Error.Failed] No discovery started"]

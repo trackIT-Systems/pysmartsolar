@@ -34,4 +34,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
       - name: Run tests
+        if: ${{ !(matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13') }}
         run: pytest
+      # Linux runs every test (the BlueZ agent and the passive scan need dbus-fast): coverage is measured there
+      - name: Run tests with coverage
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13' }}
+        run: pytest --cov --cov-report=term --cov-fail-under=93

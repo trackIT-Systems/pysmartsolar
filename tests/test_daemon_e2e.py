@@ -389,6 +389,48 @@ def test_a_config_error_is_logged_as_critical(tmp_path, caplog, capsys):
     assert "error:" not in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("given", [False, True], ids=["default", "--config"])
+def test_the_config_at_the_default_up_to_1_2_is_read_with_a_warning(tmp_path, monkeypatch, caplog, given):
+    import smartsolar.config as config_module
+
+    new, old = tmp_path / "etc" / "smartsolar.yml", tmp_path / "boot" / "smartsolar.yml"
+    old.parent.mkdir()
+    old.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", new)
+    monkeypatch.setattr(config_module, "LEGACY_CONFIG_PATH", old)
+    monkeypatch.setattr(daemon_module, "DEFAULT_CONFIG_PATH", new)
+    monkeypatch.setattr(daemon_module, "LEGACY_CONFIG_PATH", old)
+    started = []
+
+    class Started:
+        def __init__(self, config):
+            started.append(config.path)
+
+        async def run(self):
+            return 0
+
+    monkeypatch.setattr(daemon_module, "Daemon", Started)
+    assert daemon_module.main(["--config", str(old)] if given else []) == 0
+    assert started == [old]
+    warnings = [r.getMessage() for r in caplog.records if r.name == "smartsolar.daemon" and r.levelno == logging.WARNING]
+    assert warnings == ([] if given else [f"Reading the configuration from {old}, the default up to 1.2: move it to {new}"])
+
+
+def test_a_daemon_that_cannot_continue_is_logged_as_critical(tmp_path, monkeypatch, caplog):
+    path = tmp_path / "smartsolar.yml"
+    path.write_text("{}\n", encoding="utf-8")
+
+    class Failing:
+        def __init__(self, config): ...
+
+        async def run(self):
+            raise OSError("socket in use")
+
+    monkeypatch.setattr(daemon_module, "Daemon", Failing)
+    assert daemon_module.main(["--config", str(path)]) == 1
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.CRITICAL] == ["Cannot continue: socket in use"]
+
+
 def test_write_command_changes_a_register_and_logs_it():
     async def go():
         async with Env() as env:
