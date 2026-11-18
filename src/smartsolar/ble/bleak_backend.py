@@ -24,6 +24,9 @@ Platform differences, all handled here:
   rejects a connect with ``InProgress`` while the same client scans.
 * A failed or cancelled connect always ends with a disconnect, so BlueZ is not left with a
   half-open connection that makes the next attempt fail.
+* A scan ends with bluetoothd (its advertisement monitor or discovery is gone), but the scanner
+  object does not notice. bluetoothd getting a new owner on the system bus drops the scanner and
+  marks the scan as lost, so the daemon starts it again (pysmartsolar#9).
 """
 
 from __future__ import annotations
@@ -50,6 +53,7 @@ log = logging.getLogger(__name__)
 HAS_AGENT = sys.platform.startswith("linux")  # a BlueZ pairing agent over D-Bus
 
 SCANNER_STOP_TIMEOUT_S = 5.0
+BLUEZ_SERVICE = "org.bluez"
 DISCONNECT_TIMEOUT_S = 10.0
 CONNECT_GRACE_S = 5.0
 LOOKUP_TIMEOUT_S = 10.0
@@ -93,6 +97,38 @@ def map_pair_error(exc: BaseException) -> PairingError:
     if "Authentication" in name or "AuthenticationFailed" in text:
         return PairingError(f"pairing rejected, is the passkey right? ({text})")
     return PairingError(text)
+
+
+async def watch_bluetoothd(on_start: Callable[[], None]) -> None:
+    """Call ``on_start`` whenever bluetoothd takes its name on the system bus, until the bus connection ends."""
+    from dbus_fast import BusType, Message, MessageType
+    from dbus_fast.aio import MessageBus
+
+    def handle(message: Any) -> None:
+        if message.message_type == MessageType.SIGNAL and message.member == "NameOwnerChanged":
+            name, _old, new = message.body
+            if name == BLUEZ_SERVICE and new:
+                on_start()
+
+    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+    try:
+        bus.add_message_handler(handle)
+        rule = f"type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='{BLUEZ_SERVICE}'"
+        reply = await bus.call(
+            Message(
+                destination="org.freedesktop.DBus",
+                path="/org/freedesktop/DBus",
+                interface="org.freedesktop.DBus",
+                member="AddMatch",
+                signature="s",
+                body=[rule],
+            )
+        )
+        if reply.message_type == MessageType.ERROR:
+            raise OSError(f"{reply.error_name}: {reply.body}")
+        await bus.wait_for_disconnect()
+    finally:
+        bus.disconnect()
 
 
 class BleakLink:
@@ -186,6 +222,9 @@ class BleakBackend:
         self._passive = scanning != "active" and HAS_AGENT  # until BlueZ turns out not to offer it
         self._scanner: Any = None
         self._on_advert: Callable[[Advertisement], None] | None = None
+        self._lost = False  # the scan ended without stop_scan, until start_scan
+        self._watcher: asyncio.Task[None] | None = None
+        self._discards: set[asyncio.Task[None]] = set()
         self._failures = Failures(log)
         self._adapter_warned = False
         if scanning == "passive" and not HAS_AGENT:
@@ -229,7 +268,39 @@ class BleakBackend:
 
     async def start_scan(self, on_advert: Callable[[Advertisement], None]) -> None:
         self._on_advert = on_advert
+        self._lost = False
+        if HAS_AGENT and self._watcher is None:
+            self._watcher = asyncio.create_task(self._watch_bluetoothd())
         await self._start_scanner()
+
+    def scan_lost(self) -> bool:
+        return self._lost
+
+    async def _watch_bluetoothd(self) -> None:
+        try:
+            await watch_bluetoothd(self._bluetoothd_started)
+        except Exception as exc:
+            log.warning("Cannot watch for bluetoothd restarts, the scan does not survive one: %s", str(exc) or type(exc).__name__)
+        else:
+            log.warning("The system bus closed: bluetoothd restarts are no longer noticed")
+
+    def _bluetoothd_started(self) -> None:
+        scanner, self._scanner = self._scanner, None
+        if scanner is None:
+            return  # not scanning, or a connect is under way and starts the scanner again
+        log.warning("bluetoothd restarted: the scan ended with it")
+        self._lost = True
+        task = asyncio.create_task(self._discard(scanner))
+        self._discards.add(task)
+        task.add_done_callback(self._discards.discard)
+
+    @staticmethod
+    async def _discard(scanner: Any) -> None:
+        """Stop a scanner of an earlier bluetoothd: it fails there, but bleak forgets the scanner's callbacks."""
+        try:
+            await asyncio.wait_for(scanner.stop(), SCANNER_STOP_TIMEOUT_S)
+        except Exception as exc:
+            log.debug("Stopping the scanner of the earlier bluetoothd: %r", exc)
 
     async def _start_scanner(self) -> None:
         if self._scanner is not None:
@@ -320,6 +391,7 @@ class BleakBackend:
                 try:
                     await self._start_scanner()
                 except Exception as exc:
+                    self._lost = True  # the daemon starts it again
                     error = str(exc) or type(exc).__name__
                     self._failures.failed("scanner restart", error, "Cannot restart the BLE scanner after connecting: %s", error)
                 else:

@@ -264,6 +264,7 @@ class FakeBackend:
         self.on_advert: Callable[[Advertisement], None] | None = None
         self.scanning = False
         self.scan_starts = 0
+        self.lost = False  # the scan ended without stop_scan (bluetoothd restarted)
         self.params = PARAMS
         self.values = default_values()
         self.registers = default_registers()
@@ -283,11 +284,15 @@ class FakeBackend:
     async def start_scan(self, on_advert: Callable[[Advertisement], None]) -> None:
         self.on_advert = on_advert
         self.scanning = True
+        self.lost = False
         self.scan_starts += 1
 
     async def stop_scan(self) -> None:
         self.scanning = False
         self.on_advert = None
+
+    def scan_lost(self) -> bool:
+        return self.lost
 
     def emit(self, adv: Advertisement) -> None:
         assert self.on_advert is not None, "scan not started"

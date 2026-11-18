@@ -69,6 +69,9 @@ class NoBackend:
     async def stop_scan(self) -> None:
         return
 
+    def scan_lost(self) -> bool:
+        return False
+
     async def connect(self, *args: Any, **kwargs: Any):
         raise ConnectError("Bluetooth is disabled (ble.enabled is false)")
 
@@ -287,7 +290,7 @@ class Daemon:
         log.info("Stopped")
 
     async def _scan_supervisor(self) -> None:
-        """Keep the permanent scan running: start it, retry if that fails, restart it if it goes quiet."""
+        """Keep the permanent scan running: start it, retry if that fails, restart it if it ends or goes quiet."""
         started_before = False
         restarted_at: float | None = None  # when the watchdog restarted the scan, until an advertisement arrives again
         while True:
@@ -304,6 +307,10 @@ class Daemon:
             started_before = True
             while True:
                 await asyncio.sleep(SCAN_CHECK_S)
+                if self.backend.scan_lost():
+                    log.warning("The scan ended without being stopped, starting it again")
+                    self._on_event(Event(datetime.now().astimezone(), "scan_restarted", self.tracker.current_address))
+                    break
                 last = self.tracker.last_advert_mono
                 if restarted_at is not None and last is not None and last > restarted_at:
                     self._failures.succeeded("scan watchdog", "Advertisements from %s arrive again", self.tracker.current_address)

@@ -335,6 +335,22 @@ def test_the_scan_is_restarted_when_the_device_goes_quiet(monkeypatch):
     run(go())
 
 
+def test_a_lost_scan_is_started_again_without_a_selected_device(caplog):
+    async def go():
+        async with Env() as env:
+            await until(lambda: env.backend.scanning)
+            assert env.daemon.tracker.current_address is None  # the watchdog has nothing to watch
+            env.backend.lost = True  # bluetoothd restarted
+            await until(lambda: env.backend.scan_starts == 2)
+            assert not env.backend.scan_lost()
+            events = lambda: [json.loads(p)["event"] for t, p, _ in env.mqtt.published if t == "tracker/smartsolar/events/json"]
+            await until(lambda: "scan_restarted" in events())
+
+    with caplog.at_level(logging.WARNING, logger="smartsolar.daemon"):
+        run(go())
+    assert "The scan ended without being stopped, starting it again" in caplog.messages
+
+
 def test_a_scan_that_cannot_start_is_retried(caplog):
     async def go():
         env = Env()

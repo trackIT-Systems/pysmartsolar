@@ -59,6 +59,9 @@ class BleBackend(Protocol):
 
     async def stop_scan(self) -> None: ...
 
+    def scan_lost(self) -> bool:
+        """True once the scan ended without ``stop_scan`` (bluetoothd restarted), until the next ``start_scan``."""
+
     async def connect(
         self,
         adv: Advertisement,

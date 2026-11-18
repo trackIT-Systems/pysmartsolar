@@ -29,6 +29,14 @@ def bluez(monkeypatch):
     """The tests below describe the BlueZ path (pairing agent); the other systems are tested at the end."""
     monkeypatch.setattr(bb, "HAS_AGENT", True)
     monkeypatch.setattr(bb.passive, "install", lambda: True)  # tested in test_passive.py
+    watching = []
+
+    async def watch_bluetoothd(on_start):
+        watching.append(on_start)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(bb, "watch_bluetoothd", watch_bluetoothd)
+    return watching
 
 
 def test_connect_error_mapping():
@@ -589,3 +597,75 @@ def test_without_the_monitor_patch_auto_scans_actively(monkeypatch, caplog, scan
         run(bb.BleakBackend(scanning=scanning).start_scan(lambda adv: None))
     assert [kw.get("scanning_mode") for kw in created] == [mode]
     assert [r.message for r in caplog.records] == [warning]
+
+
+def test_a_bluetoothd_restart_drops_the_scanner_and_marks_the_scan_lost(monkeypatch, bluez):
+    created = []
+    recording_scanner(monkeypatch, created)
+    stopped = []
+
+    async def go():
+        backend = bb.BleakBackend()
+        await backend.start_scan(lambda adv: None)
+        await asyncio.sleep(0)
+        [restarted] = bluez
+        scanner = backend._scanner
+        scanner.stop = lambda: stopped.append(scanner) or asyncio.sleep(0)
+        assert not backend.scan_lost()
+        restarted()
+        assert backend.scan_lost() and backend._scanner is None
+        await asyncio.sleep(0.01)
+        assert stopped == [scanner]  # bleak forgets its callbacks
+        await backend.start_scan(lambda adv: None)
+        assert not backend.scan_lost() and backend._scanner is not None and len(created) == 2
+        assert len(bluez) == 1  # watched once
+
+        await backend.stop_scan()
+        restarted()  # not scanning: nothing lost
+        assert not backend.scan_lost()
+
+    run(go())
+
+
+def test_a_scanner_that_cannot_be_restarted_after_connecting_counts_as_lost(monkeypatch):
+    created = []
+    recording_scanner(monkeypatch, created)
+
+    async def go():
+        backend = bb.BleakBackend()
+        await backend.start_scan(lambda adv: None)
+        start = bb.BleakScanner.start
+
+        async def refuse(self):
+            raise BleakError("adapter not ready")
+
+        bb.BleakScanner.start = refuse
+        await backend.connect(SimpleNamespace(address=A), timeout_s=1.0, on_disconnect=lambda: None)
+        assert backend.scan_lost() and backend._scanner is None
+        bb.BleakScanner.start = start
+        await backend.start_scan(lambda adv: None)
+        assert not backend.scan_lost()
+
+    run(go())
+
+
+def test_a_watch_that_cannot_start_is_told_and_scanning_goes_on(monkeypatch, caplog):
+    created = []
+    recording_scanner(monkeypatch, created)
+
+    async def no_bus(on_start):
+        raise FileNotFoundError("no system bus")
+
+    monkeypatch.setattr(bb, "watch_bluetoothd", no_bus)
+
+    async def go():
+        backend = bb.BleakBackend()
+        await backend.start_scan(lambda adv: None)
+        await asyncio.sleep(0.01)
+        assert backend._scanner is not None
+
+    with caplog.at_level("WARNING"):
+        run(go())
+    assert [r.message for r in caplog.records if "bluetoothd" in r.message] == [
+        "Cannot watch for bluetoothd restarts, the scan does not survive one: no system bus"
+    ]
