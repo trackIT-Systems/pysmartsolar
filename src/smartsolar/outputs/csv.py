@@ -37,8 +37,11 @@ class CsvOutput:
         self.clock = clock or Clock()
         # Whether rows are being dropped, to log when that starts and ends
         self._dropping = False
-        # fails at startup, not with the first reading, when the directory can't be made
-        self.dir.mkdir(parents=True, exist_ok=True)
+        # The kind of error (type and errno, not the file name: the readings and the events
+        # files fail alike) while the files can't be written, e.g. without a data volume, to
+        # log when that starts, changes and ends. The directory is made with the first row, so
+        # a station without a writable data volume keeps its other outputs.
+        self._unwritable: tuple[str, int | None] | None = None
 
     def daily_file(self, key: str, when: datetime) -> Path:
         stem = f"{self.host}_{when:%Y-%m-%d}"
@@ -63,7 +66,19 @@ class CsvOutput:
         if self._dropping:
             log.info("The clock is trusted: writing rows to %s", self.dir)
             self._dropping = False
-        self._append(self.daily_file(record.key, record.time), record.file_header, record.file_row)
+        try:
+            self._append(self.daily_file(record.key, record.time), record.file_header, record.file_row)
+        except OSError as exc:
+            kind = (type(exc).__name__, exc.errno)
+            if self._unwritable != kind:
+                log.warning("Cannot write CSV files to %s (%s: %s): readings only go to the other outputs until it works", self.dir, type(exc).__name__, exc)
+            else:
+                log.debug("Cannot write CSV files to %s again (%s: %s)", self.dir, type(exc).__name__, exc)
+            self._unwritable = kind
+            return
+        if self._unwritable is not None:
+            log.info("CSV files can be written again: writing rows to %s", self.dir)
+            self._unwritable = None
 
     def emit_reading(self, reading: Reading) -> None:
         self._write(reading_record(reading, self.clock.synced(), with_block=True))

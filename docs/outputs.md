@@ -171,6 +171,8 @@ Measurements first, then the settings and identity values (mostly from GATT), th
 
 The files are `;` separated with a header row at the top, and are only appended to, never rotated or deleted.
 
+The directory is made with the first row. If the files can't be written (a station whose data volume is missing, so `/data` is not writable), `smartsolard` keeps running and the readings only go over MQTT; their rows are dropped, not kept for later. The start is logged once at WARNING (again if the error changes), the end once at INFO, when the next row is written, for example after a USB disk was mounted on `/data`.
+
 ## Clock
 
 A station can run with an untrusted clock for a while (no network, no GNSS, no checked RTC), and `smartsolard` does not wait for it. Rows for the files need a time that can be trusted, so they are only written once the clock is:
